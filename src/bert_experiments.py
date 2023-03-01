@@ -1,21 +1,22 @@
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModel
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModel, DataCollatorWithPadding
 from torch import nn
 from datasets import load_dataset
 from collections import OrderedDict
-from transformers import AdamW, get_linear_schedule_with_warmup
+from transformers import AdamW, get_scheduler
 import torch 
 from torch.utils.data import (
     Dataset,
     DataLoader,
 )
 from tqdm import tqdm, trange
+import evaluate as e
 
 
 from shap_utils.utils import text as get_text
 import shap
 
 max_length = 128
-NUM_EPOCHS = 10
+NUM_EPOCHS = 4
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -28,7 +29,7 @@ lsm = torch.nn.LogSoftmax(dim=-1)
 class Model(nn.Module):
     def __init__(self, type):
         super().__init__()
-        self.model = AutoModelForSequenceClassification.from_pretrained(type)
+        self.model = AutoModelForSequenceClassification.from_pretrained(type, num_labels=2)
     
     def forward(self, **inputs):
         x = self.model(**inputs) 
@@ -71,50 +72,64 @@ def calculate_shapley_values(models, tokenizer, texts, text_to_model):
     return sorted_dict
 
 def train(model, dataloader):
+    num_training_steps = NUM_EPOCHS * len(dataloader)
     optimizer = AdamW(model.parameters(), lr=5e-5)
+
+    lr_scheduler = get_scheduler(
+        "linear",
+        optimizer=optimizer,
+        num_warmup_steps=0,
+        num_training_steps=num_training_steps,
+    )
     model.train()
     for step in trange(NUM_EPOCHS):
         for n, inputs in enumerate(tqdm(dataloader)):
-            optimizer.zero_grad()
+            inputs = {k: v.to(device) for k, v in inputs.items()}
 
-            model_output_dict = model(input_ids=inputs["input_ids"].to(device), 
-                            attention_mask=inputs["attention_mask"].to(device),
-                            labels=inputs["label"].to(device))
+            model_output_dict = model(**inputs)
 
             loss = model_output_dict["loss"]
 
             loss.backward() 
             optimizer.step()
-    
+            lr_scheduler.step()
+            optimizer.zero_grad()
+
     return model
 
 def evaluate(model, dataloader):
+    metric = e.load("glue", "mrpc")
     model.eval()
-    all_logits = []
     val_acc = 0
     
     for n, inputs in enumerate(tqdm(dataloader)):
-        model_output_dict = model(input_ids=inputs["input_ids"], 
-                        attention_mask=inputs["attention_mask"],
-                        labels=inputs["label"])
-        y_pred_softmax = torch.log_softmax(model_output_dict["logits"], dim=1)
-        _, y_pred_tags = torch.max(y_pred_softmax, dim=1)
-        correct_pred = y_pred_tags == inputs["label"]
-        acc = correct_pred.sum() / len(correct_pred)
-        acc = torch.round(acc * 100)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        with torch.no_grad():
+            outputs = model(**inputs)
+        
+        logits = outputs.logits
+        predictions = torch.argmax(logits, dim=-1)
+        metric.add_batch(predictions=predictions, references=inputs["labels"])
+
+        # metric.add_batch(predictions=predictions, references=batch["labels"])
+        # y_pred_softmax = torch.log_softmax(model_output_dict["logits"], dim=1)
+        # _, y_pred_tags = torch.max(y_pred_softmax, dim=1)
+        # correct_pred = predictions == inputs["labels"].to(device)
+        # acc = correct_pred.sum() / len(correct_pred)
+        # acc = torch.round(acc * 100)
 
 
-        val_acc += acc
-        # all_logits.extend(logits)
+        # val_acc += acc
+        # # all_logits.extend(logits)
     
-    print(val_acc / len(dataloader))
+    # print(val_acc / len(dataloader))
+    print(metric.compute())
     # all_logits = [0 if x[0] > x[1] else 1 for x in all_logits]
 
     
 def tokenization(tokenzier, example):
     return tokenzier(example["text"], 
             truncation=True,
-            max_length=max_length,
             padding=True)
 def main():
     dataset = load_dataset("rotten_tomatoes")
@@ -124,18 +139,20 @@ def main():
     teacher_model.to(device)
     # student_model = Model(student)
     # teacher_tokenizer = AutoTokenizer.from_pretrained(student)
+    data_collator = DataCollatorWithPadding(tokenizer=teacher_tokenizer)
 
-    
     train_dataset = dataset["train"].map(lambda e: tokenization(teacher_tokenizer, e), batched=True)
     train_dataset.set_format(type="torch", columns=["input_ids", "token_type_ids", "attention_mask", "label"])
-    train_dataloader = DataLoader(train_dataset, batch_size=4)
+    train_dataset = train_dataset.rename_column("label", "labels")
+    train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=4, collate_fn=data_collator)
 
     test_dataset = dataset["test"].map(lambda e: tokenization(teacher_tokenizer, e), batched=True)
     test_dataset.set_format(type="torch", columns=["input_ids", "token_type_ids", "attention_mask", "label"])
-    test_dataloader = DataLoader(test_dataset, batch_size=4)
+    test_dataset = test_dataset.rename_column("label", "labels")
+    test_dataloader = DataLoader(test_dataset, batch_size=4, collate_fn=data_collator)
     # print(dataset)
-    model = train(teacher_model, train_dataloader)
-    eval(model, test_dataloader)
+    teacher_model = train(teacher_model, train_dataloader)
+    evaluate(teacher_model, test_dataloader)
 
 if __name__ == "__main__":
     main()
