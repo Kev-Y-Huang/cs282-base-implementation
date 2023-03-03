@@ -98,7 +98,7 @@ def train(model, dataloader):
     return model
 
 def evaluate(model, dataloader):
-    metric = e.load("glue", "mrpc")
+    metric = e.load("glue", "sst2")
     model.eval()
     val_acc = 0
     
@@ -111,18 +111,6 @@ def evaluate(model, dataloader):
         predictions = torch.argmax(logits, dim=-1)
         metric.add_batch(predictions=predictions, references=inputs["labels"])
 
-        # metric.add_batch(predictions=predictions, references=batch["labels"])
-        # y_pred_softmax = torch.log_softmax(model_output_dict["logits"], dim=1)
-        # _, y_pred_tags = torch.max(y_pred_softmax, dim=1)
-        # correct_pred = predictions == inputs["labels"].to(device)
-        # acc = correct_pred.sum() / len(correct_pred)
-        # acc = torch.round(acc * 100)
-
-
-        # val_acc += acc
-        # # all_logits.extend(logits)
-    
-    # print(val_acc / len(dataloader))
     print(metric.compute())
     # all_logits = [0 if x[0] > x[1] else 1 for x in all_logits]
 
