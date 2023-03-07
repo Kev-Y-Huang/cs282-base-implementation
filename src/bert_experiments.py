@@ -1,4 +1,5 @@
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModel, DataCollatorWithPadding
+from copy import deepcopy
+from transformers import BertForSequenceClassification, AutoModelForSequenceClassification, AutoTokenizer, AutoModel, DataCollatorWithPadding
 from torch import nn
 from datasets import load_dataset
 from collections import OrderedDict
@@ -20,16 +21,32 @@ NUM_EPOCHS = 4
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+STUDENT_MODELS = [
+    "huawei-noah/TinyBERT_General_4L_312D",
+    "distilbert-base-uncased",
+    "google/mobilebert-uncased",
+]
+
 teacher = "bert-base-uncased"
 student = "distilbert-base-uncased"
 
 lsm = torch.nn.LogSoftmax(dim=-1)
 
+class KDBertForSequenceClassification(BertForSequenceClassification):
+    def __init__(self, teacher):
+        self.config = deepcopy(teacher.config)
+        # self.config.update({"num_hidden_layers": num_layers})
+        # self.config.update({"attention_probs_dropout_prob":0,"hidden_dropout_prob":0})
+        super().__init__(self.config)
+
+        self.embeddings = self.bert.embeddings
+        print(self.bert.embeddings)
 
 class Model(nn.Module):
     def __init__(self, type):
         super().__init__()
-        self.model = AutoModelForSequenceClassification.from_pretrained(type, num_labels=2)
+        self.model = BertForSequenceClassification.from_pretrained(type, num_labels=2)
+        print(self.model.embeddings)
     
     def forward(self, **inputs):
         x = self.model(**inputs) 
@@ -121,26 +138,30 @@ def tokenization(tokenzier, example):
             padding=True)
 def main():
     dataset = load_dataset("rotten_tomatoes")
+    teacher_model = AutoModelForSequenceClassification.from_pretrained(teacher)
+    student_model = KDBertForSequenceClassification(teacher=teacher_model)
+
+
     
-    teacher_model = Model(teacher)
-    teacher_tokenizer = AutoTokenizer.from_pretrained(teacher)
-    teacher_model.to(device)
-    # student_model = Model(student)
-    # teacher_tokenizer = AutoTokenizer.from_pretrained(student)
-    data_collator = DataCollatorWithPadding(tokenizer=teacher_tokenizer)
+    # teacher_model = Model(teacher)
+    # teacher_tokenizer = AutoTokenizer.from_pretrained(teacher)
+    # teacher_model.to(device)
+    # # student_model = Model(student)
+    # # teacher_tokenizer = AutoTokenizer.from_pretrained(student)
+    # data_collator = DataCollatorWithPadding(tokenizer=teacher_tokenizer)
 
-    train_dataset = dataset["train"].map(lambda e: tokenization(teacher_tokenizer, e), batched=True)
-    train_dataset.set_format(type="torch", columns=["input_ids", "token_type_ids", "attention_mask", "label"])
-    train_dataset = train_dataset.rename_column("label", "labels")
-    train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=4, collate_fn=data_collator)
+    # train_dataset = dataset["train"].map(lambda e: tokenization(teacher_tokenizer, e), batched=True)
+    # train_dataset.set_format(type="torch", columns=["input_ids", "token_type_ids", "attention_mask", "label"])
+    # train_dataset = train_dataset.rename_column("label", "labels")
+    # train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=4, collate_fn=data_collator)
 
-    test_dataset = dataset["test"].map(lambda e: tokenization(teacher_tokenizer, e), batched=True)
-    test_dataset.set_format(type="torch", columns=["input_ids", "token_type_ids", "attention_mask", "label"])
-    test_dataset = test_dataset.rename_column("label", "labels")
-    test_dataloader = DataLoader(test_dataset, batch_size=4, collate_fn=data_collator)
-    # print(dataset)
-    teacher_model = train(teacher_model, train_dataloader)
-    evaluate(teacher_model, test_dataloader)
+    # test_dataset = dataset["test"].map(lambda e: tokenization(teacher_tokenizer, e), batched=True)
+    # test_dataset.set_format(type="torch", columns=["input_ids", "token_type_ids", "attention_mask", "label"])
+    # test_dataset = test_dataset.rename_column("label", "labels")
+    # test_dataloader = DataLoader(test_dataset, batch_size=4, collate_fn=data_collator)
+    # # print(dataset)
+    # teacher_model = train(teacher_model, train_dataloader)
+    # evaluate(teacher_model, test_dataloader)
 
 if __name__ == "__main__":
     main()
