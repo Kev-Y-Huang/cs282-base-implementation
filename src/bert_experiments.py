@@ -1,5 +1,5 @@
 from copy import deepcopy
-from transformers import BertForSequenceClassification, AutoModelForSequenceClassification, AutoTokenizer, AutoModel, DataCollatorWithPadding
+from transformers import BertForSequenceClassification, AutoModelForSequenceClassification, AutoTokenizer, AutoModel, DataCollatorWithPadding, DistilBertForSequenceClassification
 from torch import nn
 from datasets import load_dataset
 from collections import OrderedDict
@@ -32,21 +32,21 @@ student = "distilbert-base-uncased"
 
 lsm = torch.nn.LogSoftmax(dim=-1)
 
-class KDBertForSequenceClassification(BertForSequenceClassification):
-    def __init__(self, teacher):
-        self.config = deepcopy(teacher.config)
-        # self.config.update({"num_hidden_layers": num_layers})
-        # self.config.update({"attention_probs_dropout_prob":0,"hidden_dropout_prob":0})
-        super().__init__(self.config)
+# class KDBertForSequenceClassification(BertForSequenceClassification):
+#     def __init__(self, teacher):
+#         self.config = deepcopy(teacher.config)
+#         # self.config.update({"num_hidden_layers": num_layers})
+#         # self.config.update({"attention_probs_dropout_prob":0,"hidden_dropout_prob":0})
+#         super().__init__(self.config)
 
-        self.embeddings = self.bert.embeddings
-        print(self.bert.embeddings)
+#         self.embeddings = self.bert.embeddings
+#         print(self.bert.embeddings)
 
-class Model(nn.Module):
+class DistilledModel(nn.Module):
     def __init__(self, type):
         super().__init__()
-        self.model = BertForSequenceClassification.from_pretrained(type, num_labels=2)
-        print(self.model.embeddings)
+        self.model = DistilBertForSequenceClassification.from_pretrained(type, num_labels=2)
+        # print(self.model.embeddings)
     
     def forward(self, **inputs):
         x = self.model(**inputs) 
@@ -129,7 +129,7 @@ def evaluate(model, dataloader):
         metric.add_batch(predictions=predictions, references=inputs["labels"])
 
     print(metric.compute())
-    # all_logits = [0 if x[0] > x[1] else 1 for x in all_logits]
+    all_logits = [0 if x[0] > x[1] else 1 for x in all_logits]
 
     
 def tokenization(tokenzier, example):
@@ -137,9 +137,16 @@ def tokenization(tokenzier, example):
             truncation=True,
             padding=True)
 def main():
-    dataset = load_dataset("rotten_tomatoes")
-    teacher_model = AutoModelForSequenceClassification.from_pretrained(teacher)
-    student_model = KDBertForSequenceClassification(teacher=teacher_model)
+    model = DistilBertForSequenceClassification.from_pretrained("./results/s_distilbert_t_bert_data_wikitext_dataset_seed_42_mlm_True_ce_0.25_mlm_0.25_cos_0.25_causal-ce_0.25_causal-cos_0.25_nm_single_middle_layer_6_crossway_False_int-prop_0.3_consec-token_True_masked-token_False_max-int-token_-1_eff-bs_240/")
+    
+    # load train, test, val from load_glue 
+    # ex. train, test, val = load_glue_dataset(tokenizer, "sst2")
+    #     train_dataloader = DataLoader()...
+
+
+    # dataset = load_dataset("rotten_tomatoes")
+    # teacher_model = AutoModelForSequenceClassification.from_pretrained(teacher)
+    # student_model = KDBertForSequenceClassification(teacher=teacher_model)
 
 
     

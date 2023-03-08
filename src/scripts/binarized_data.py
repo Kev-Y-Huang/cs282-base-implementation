@@ -60,10 +60,11 @@ def main():
   parser.add_argument("--dump_file", type=str, default="data/dump", help="The dump file prefix.")
   parser.add_argument("--preprocessing_num_workers", type=int, default=10, help="Number of process to preprocess the dataset")
 
+
   args = parser.parse_args()
   tokenizer = BertTokenizer.from_pretrained(
     args.tokenizer_name,
-    cache_dir=args.cache_dir
+    cache_dir=args.cache_dir 
   )
 
   bos = tokenizer.special_tokens_map["cls_token"]  # `[CLS]`
@@ -73,10 +74,10 @@ def main():
   dataset_names = []
   for dataset_n in args.dataset_name.split("+"):
     dataset_names += [dataset_n]
-    # logger.info(f"Loading text from {dataset_n}")
+    logger.info(f"Loading text from {dataset_n}")
     if dataset_n == "wikitext":
-        dataset = load_dataset(
-            "wikitext", "wikitext-103-v1",
+        print("here")
+        dataset = load_dataset("wikitext", "wikitext-103-v1",
             cache_dir=args.cache_dir
         )
     else:
