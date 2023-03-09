@@ -59,9 +59,6 @@ MODEL_CLASSES = {
 }
 
 
-# In[ ]:
-
-
 def sanity_checks(args):
     """
     A bunch of args sanity checks to perform even starting...
@@ -69,6 +66,7 @@ def sanity_checks(args):
     assert (args.mlm and args.alpha_mlm > 0.0) or (not args.mlm and args.alpha_mlm == 0.0)
     assert (args.alpha_mlm > 0.0 and args.alpha_clm == 0.0) or (args.alpha_mlm == 0.0 and args.alpha_clm > 0.0)
     if args.mlm:
+        print(args.token_counts)
         assert os.path.isfile(args.token_counts)
         assert (args.student_type in ["roberta", "distilbert"]) and (args.teacher_type in ["roberta", "bert"])
     else:
@@ -79,6 +77,7 @@ def sanity_checks(args):
     )
     assert os.path.isfile(args.student_config)
     if args.student_pretrained_weights is not None:
+        print(args.student_pretrained_weights)
         assert os.path.isfile(args.student_pretrained_weights)
 
     if args.freeze_token_type_embds:
@@ -134,7 +133,7 @@ def prepare_distiller(args):
         logger.info(f"Param: {args}")
         with open(os.path.join(args.dump_path, "parameters.json"), "w") as f:
             json.dump(vars(args), f, indent=4)
-        git_log(args.dump_path)
+        # git_log(args.dump_path)
 
     student_config_class, student_model_class, _ = MODEL_CLASSES[args.student_type]
     teacher_config_class, teacher_model_class, teacher_tokenizer_class = MODEL_CLASSES[args.teacher_type]
