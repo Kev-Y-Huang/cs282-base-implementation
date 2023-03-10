@@ -545,7 +545,6 @@ class BertEncoder(nn.Module):
         output_attentions=False,
         output_hidden_states=False,
         return_dict=True,
-        # for interchange.
         interchanged_variables=None, 
         variable_names=None,
         interchange_mask=None,
@@ -599,14 +598,23 @@ class BertEncoder(nn.Module):
             hidden_states = layer_outputs[0]
             
             
-            if variable_names != None and variable_names != "embeddings" and i in variable_names:
-                if interchanged_variables != None:
+            if None not in [variable_names, interchanged_variables] and i in variable_names:
+                # interchange operation not meant for embedding layers
+                if variable_names != "embeddings":
                     for interchanged_variable in variable_names[i]:
-                        interchanged_activations = interchanged_variables[interchanged_variable[0]]
-                        start_index = interchanged_variable[1]*self.head_dimension + interchanged_variable[2].start
-                        stop_index = start_index + interchanged_variable[2].stop
-                        replacing_activations = interchanged_activations[dual_interchange_mask]
-                        hidden_states[...,start_index:stop_index][interchange_mask] = replacing_activations
+                        # for each variable, retrieve the corresponding interchanged activations
+                        layer = interchanged_variable[0] 
+                        head = interchanged_variable[1]
+                        activation_locations = interchanged_variable[2]
+
+                        interchanged_activations = interchanged_variables[layer]
+                        # replace some tokens in the input sequence as specified by interchange_mask
+                        # and start and end indices with the interchanged values
+                        start_idx = head * self.head_dimension + activation_locations.start
+                        end_idx = start_idx + activation_locations.stop
+                
+                        # apply interchange mask
+                        hidden_states[...,start_idx:end_idx][interchange_mask] = interchanged_activations[dual_interchange_mask]
             
             if use_cache:
                 next_decoder_cache += (layer_outputs[-1],)

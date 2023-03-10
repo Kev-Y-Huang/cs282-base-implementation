@@ -62,8 +62,32 @@ from transformers import (
 )
 from utils import init_gpu_params, logger, set_seed
 from datasets import load_dataset
-from counterfactual_utils import *
 from models.modeling_distilbert import DistilBertForMaskedLM
+
+def deserialize_variable_name(variable_name):
+    deserialized_variables = []
+    variable_list = variable_name.split("$")
+    if "[" in variable_list[1]:
+        left_l = int(variable_list[1].split(":")[1].strip("["))
+        right_l = int(variable_list[1].split(":")[2].strip("]"))
+    else:
+        left_l = int(variable_list[1].split(":")[-1])
+        right_l = int(variable_list[1].split(":")[-1])+1
+    if "[" in variable_list[2]:
+        left_h = int(variable_list[2].split(":")[1].strip("["))
+        right_h = int(variable_list[2].split(":")[2].strip("]"))
+    else:
+        left_h = int(variable_list[2].split(":")[-1])
+        right_h = int(variable_list[2].split(":")[-1])+1
+
+    left_d = int(variable_list[3].split(":")[0].strip("["))
+    right_d = int(variable_list[3].split(":")[1].strip("]"))
+    
+    for i in range(left_l, right_l):
+        for j in range(left_h, right_h):
+            deserialized_variable = f"$L:{i}$H:{j}$[{left_d}:{right_d}]"
+            deserialized_variables += [deserialized_variable]
+    return deserialized_variables
 
 class CausalDistiller:
     def __init__(
@@ -402,7 +426,7 @@ class CausalDistiller:
         interchange_mask = torch.zeros_like(pred_mask, dtype=torch.bool)
         dual_interchange_mask = torch.zeros_like(dual_pred_mask, dtype=torch.bool)
 
-        # sequential interchanging
+        # sequential interchanging, sample 30% of neurons
         for i in range(0, self.params.batch_size):
             num_interchange_1 = int(lengths[i] * 0.3)
             num_interchange_2 = int(dual_lengths[i] * 0.3) 
@@ -420,9 +444,6 @@ class CausalDistiller:
             
             for j in range(start_2, end_2):
                 dual_interchange_mask[i][j] = 1
-
-        assert interchange_mask.long().sum(dim=-1).tolist() == \
-                dual_interchange_mask.long().sum(dim=-1).tolist()
 
         return interchange_mask, dual_interchange_mask
 
@@ -799,7 +820,7 @@ class CausalDistiller:
             **dual_inputs,
             variable_names=student_variable_names
         )
-        # dual on main.
+
         counterfactual_outputs_student = self.student(
             input_ids=counterfactual_input_ids,
             attention_mask=attention_mask,

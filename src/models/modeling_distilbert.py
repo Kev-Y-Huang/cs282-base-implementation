@@ -335,28 +335,25 @@ class Transformer(nn.Module):
             )
             
             hidden_state = layer_outputs[-1]
-            
-            # we need to interchange!
-#            if variable_names != None and variable_names != "embeddings" and i in variable_names:
-#                assert interchanged_variables != None
-#                for interchanged_variable in variable_names[i]:
-#                    interchanged_activations = interchanged_variables[interchanged_variable[0]]
-#                    start_index = interchanged_variable[1]*self.head_dimension + interchanged_variable[2].start
-#                    stop_index = start_index + interchanged_variable[2].stop
-#                    replacing_activations = interchanged_activations[dual_interchange_mask]
-#                    hidden_state[...,start_index:stop_index][interchange_mask] = replacing_activations
 
-            # interchange (swap or exchange specific activations - outputs of attention heads - between different positions or layers within the model) if specified
+            # interchange (swap or exchange specific activations - outputs of attention heads - 
+            # between different positions or layers within the model) if specified
             if None not in [variable_names, interchanged_variables] and i in variable_names:
-                # interchange operation not designed for embedding layers
+                # interchange operation not meant for embedding layers
                 if variable_names != "embeddings":
                     for interchanged_variable in variable_names[i]:
                         # for each variable, retrieve the corresponding interchanged activations
-                        interchanged_activations = interchanged_variables[interchanged_variable[0]]
+                        layer = interchanged_variable[0] 
+                        head = interchanged_variable[1]
+                        activation_locations = interchanged_variable[2]
+
+                        interchanged_activations = interchanged_variables[layer]
                         # replace some tokens in the input sequence as specified by interchange_mask
                         # and start and end indices with the interchanged values
-                        start_idx = interchanged_variable[1]*self.head_dimension + interchanged_variable[2].start
-                        end_idx = start_idx + interchanged_variable[2].stop
+                        start_idx = head * self.head_dimension + activation_locations.start
+                        end_idx = start_idx + activation_locations.stop
+                
+                        # apply interchange mask
                         hidden_state[...,start_idx:end_idx][interchange_mask] = interchanged_activations[dual_interchange_mask]
 
             if output_attentions:
@@ -668,8 +665,7 @@ class DistilBertForMaskedLM(DistilBertPreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
-        # for interchange.
-        interchanged_variables=None, 
+        interchanged_variables=None, # activations to interchange
         variable_names=None,
         interchange_mask=None,
         dual_interchange_mask=None,
