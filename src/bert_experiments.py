@@ -14,8 +14,8 @@ import evaluate as e
 
 from load_glue import *
 
-from shap_utils.utils import text as get_text
-import shap
+import argparse
+
 
 max_length = 128
 NUM_EPOCHS = 3
@@ -34,9 +34,10 @@ student = "distilbert-base-uncased"
 lsm = torch.nn.LogSoftmax(dim=-1)
 
 class DistilledModel(nn.Module):
-    def __init__(self, type):
+    def __init__(self, type, task):
         super().__init__()
-        self.model = DistilBertForSequenceClassification.from_pretrained(type, num_labels=2)
+        num_labels = 3 if task.startswith("mnli") else 1 if task=="stsb" else 2
+        self.model = DistilBertForSequenceClassification.from_pretrained(type, num_labels=num_labels)
         # print(self.model.embeddings)
     
     def forward(self, **inputs):
@@ -69,8 +70,8 @@ def train(model, dataloader):
 
     return model
 
-def evaluate(model, dataloader, glue_type):
-    metric = e.load("glue", glue_type)
+def evaluate(model, dataloader, task):
+    metric = e.load("glue", task)
     model.eval()
     
     for n, inputs in enumerate(tqdm(dataloader)):
@@ -87,7 +88,7 @@ def evaluate(model, dataloader, glue_type):
 
         metric.add_batch(predictions=predictions, references=inputs["labels"])
 
-    print(glue_type, metric.compute())
+    print(task, metric.compute())
 
     
 def tokenization(tokenzier, example):
@@ -96,10 +97,21 @@ def tokenization(tokenzier, example):
             padding=True)
 
 def main():
-    model = DistilledModel("./results/s_distilbert_t_bert_data_wikitext_dataset_seed_42_mlm_True_ce_0.25_mlm_0.25_cos_0.25_causal-ce_0.25_causal-cos_0.25_nm_single_middle_layer_6_crossway_False_int-prop_0.3_consec-token_True_masked-token_False_max-int-token_-1_eff-bs_240")
+    parser = argparse.ArgumentParser(description="Training/Eval for GLUE datasets")
+    parser.add_argument("--task", "-t", type=str, help="GLUE task")
+    
+    args = parser.parse_args()
+    task = args.task
+
+    assert task in GLUE_CONFIGS
+
+    model = DistilledModel(
+        "./results/s_distilbert_t_bert_data_wikitext_dataset_seed_42_mlm_True_ce_0.25_mlm_0.25_cos_0.25_causal-ce_0.25_causal-cos_0.25_nm_single_middle_layer_6_crossway_False_int-prop_0.3_consec-token_True_masked-token_False_max-int-token_-1_eff-bs_240",
+        task=task)
+    
     model.to(device)
     tokenizer = AutoTokenizer.from_pretrained(teacher)
-    train_dataset, val_dataset, _ = load_glue_dataset(tokenizer, glue_type)
+    train_dataset, val_dataset, _ = load_glue_dataset(tokenizer, task)
 
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
     train_dataset.set_format(type="torch", columns=["input_ids", "token_type_ids", "attention_mask", "labels"])
@@ -113,9 +125,9 @@ def main():
     val_dataloader = DataLoader(val_dataset, batch_size=4, collate_fn=data_collator)
 
     model = train(model, train_dataloader)
-    evaluate(model, val_dataloader, glue_type)
+    evaluate(model, val_dataloader, task)
 
-    print(glue_type)
+    print(task)
 
 
 if __name__ == "__main__":
