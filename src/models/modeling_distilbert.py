@@ -356,7 +356,7 @@ class Transformer(nn.Module):
                         # replace some tokens in the input sequence as specified by interchange_mask
                         # and start and end indices with the interchanged values
                         start_idx = interchanged_variable[1]*self.head_dimension + interchanged_variable[2].start
-                        end_idx = start_index + interchanged_variable[2].stop
+                        end_idx = start_idx + interchanged_variable[2].stop
                         hidden_state[...,start_idx:end_idx][interchange_mask] = interchanged_activations[dual_interchange_mask]
 
             if output_attentions:
