@@ -88,8 +88,7 @@ def sanity_checks(args):
     assert args.alpha_mse >= 0.0
     assert args.alpha_cos >= 0.0
     assert args.alpha_causal_ce >= 0.0
-    assert args.alpha_causal_cos >= 0.0
-    assert args.alpha_ce + args.alpha_mlm + args.alpha_clm + args.alpha_mse + args.alpha_cos + args.alpha_causal_ce + args.alpha_causal_cos > 0.0
+    assert args.alpha_ce + args.alpha_mlm + args.alpha_clm + args.alpha_mse + args.alpha_cos + args.alpha_causal_ce > 0.0
 
 
 def freeze_pos_embeddings(student, args):
@@ -275,9 +274,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--alpha_causal_ce", default=0.0, type=float, help="Linear weight of the causal distillation loss. Must be >=0."
     )
-    parser.add_argument(
-        "--alpha_causal_cos", default=0.0, type=float, help="Linear weight of the causal distillation loss. Must be >=0."
-    )
     
     parser.add_argument(
         "--mlm", action="store_true", help="The LM step: MLM or CLM. If `mlm` is True, the MLM is used over CLM."
@@ -288,41 +284,6 @@ if __name__ == "__main__":
         type=float,
         help="Proportion of tokens for which we need to make a prediction.",
     )
-    
-    parser.add_argument(
-        "--interchange_mlm", action="store_true", help="Whehter to follow mlm to select token positions to do interchange."
-    )
-    parser.add_argument(
-        "--interchange_prop",
-        default=0.3,
-        type=float,
-        help="Ratio of tokens to mask for interchange interventions. 1.0 means interchange all.",
-    )
-    parser.add_argument(
-        "--interchange_max_token",
-        default=-1,
-        type=int,
-        help="Ratio of tokens to mask for interchange interventions. 1.0 means interchange all.",
-    )
-    parser.add_argument(
-        "--interchange_masked_token_only", 
-        default=False, action="store_true", help="Whether to only interchange with the masked tokens."
-    )
-    parser.add_argument(
-        "--interchange_consecutive_only", 
-        default=False, action="store_true", help="Whether to only interchange consecutive tokens."
-    )
-    parser.add_argument(
-        "--data_augment", default=False, action="store_true", help="Whether to experiment with data augmentation."
-    )
-    
-    parser.add_argument(
-        "--include_crossway", default=False, action="store_true", help="Whether to include crossway losses."
-    )
-    parser.add_argument(
-        "--parallel_crossway", default=False, action="store_true", help="Whether to calculate cross losses in a single step."
-    )
-    
     parser.add_argument("--word_mask", default=0.8, type=float, help="Proportion of tokens to mask out.")
     parser.add_argument("--word_keep", default=0.1, type=float, help="Proportion of tokens to keep.")
     parser.add_argument("--word_rand", default=0.1, type=float, help="Proportion of tokens to randomly replace.")
@@ -405,14 +366,16 @@ if __name__ == "__main__":
     data_name = args.data_file.split("/")[-2]
     neuron_mapping = args.neuron_mapping.split("/")[-1].split(".")[0]
     effective_batch_size = args.gradient_accumulation_steps * args.batch_size
-    run_name = f"s_{args.student_type}_t_{args.teacher_type}_data_{data_name}_"               f"seed_{args.seed}_mlm_{args.mlm}_ce_{args.alpha_ce}_mlm_{args.alpha_mlm}_"               f"cos_{args.alpha_cos}_causal-ce_{args.alpha_causal_ce}_causal-cos_"               f"{args.alpha_causal_cos}_nm_{neuron_mapping}_crossway_{args.include_crossway}_"               f"int-prop_{args.interchange_prop}_consec-token_{args.interchange_consecutive_only}_"               f"masked-token_{args.interchange_masked_token_only}_"               f"max-int-token_{args.interchange_max_token}_"               f"eff-bs_{effective_batch_size}"
+    run_name = f"s_{args.student_type}_t_{args.teacher_type}_data_{data_name}_"   \
+            f"seed_{args.seed}_mlm_{args.mlm}_ce_{args.alpha_ce}_mlm_{args.alpha_mlm}_"\
+            f"cos_{args.alpha_cos}_causal-ce_{args.alpha_causal_ce}_" \
+            f"nm_{neuron_mapping}_crossway_" \
+            f"eff-bs_{effective_batch_size}"
     
     args.run_name = run_name
     args.dump_path = os.path.join(args.dump_path, args.run_name)
     sanity_checks(args)
 
-    assert not args.include_crossway
-    assert not args.parallel_crossway
     
     distiller = prepare_distiller(args)
     

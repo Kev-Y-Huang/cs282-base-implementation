@@ -19,6 +19,7 @@ import shap
 
 max_length = 128
 NUM_EPOCHS = 3
+glue_type = "cola"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 STUDENT_MODELS = [
@@ -71,7 +72,6 @@ def train(model, dataloader):
 def evaluate(model, dataloader, glue_type):
     metric = e.load("glue", glue_type)
     model.eval()
-    val_acc = 0
     
     for n, inputs in enumerate(tqdm(dataloader)):
         inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -84,13 +84,10 @@ def evaluate(model, dataloader, glue_type):
             predictions = torch.argmax(logits, dim=-1)
         else:
             predictions = logits[:, 0]
-        # predictions, labels = outputs
-        # logits = outputs.logits
-        # # # predictions = torch.argmax(logits, dim=-1)
-        # predictions = logits[:, 0]
+
         metric.add_batch(predictions=predictions, references=inputs["labels"])
 
-    print(metric.compute())
+    print(glue_type, metric.compute())
 
     
 def tokenization(tokenzier, example):
@@ -98,7 +95,6 @@ def tokenization(tokenzier, example):
             truncation=True,
             padding=True)
 
-glue_type = "cola"
 def main():
     model = DistilledModel("./results/s_distilbert_t_bert_data_wikitext_dataset_seed_42_mlm_True_ce_0.25_mlm_0.25_cos_0.25_causal-ce_0.25_causal-cos_0.25_nm_single_middle_layer_6_crossway_False_int-prop_0.3_consec-token_True_masked-token_False_max-int-token_-1_eff-bs_240")
     model.to(device)

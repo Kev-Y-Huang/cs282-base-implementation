@@ -19,7 +19,6 @@ import math
 import os
 import time
 
-import psutil
 import torch
 from torch import nn
 from torch.optim import AdamW
@@ -32,11 +31,7 @@ from lm_seqs_dataset import LmSeqsDataset
 from transformers import get_linear_schedule_with_warmup
 from utils import logger
 
-import argparse
 import json
-import os
-import pickle
-import shutil
 import random
 
 import numpy as np
@@ -44,49 +39,33 @@ import torch
 
 # from distiller import Distiller
 from lm_seqs_dataset import LmSeqsDataset
-from transformers import (
-    AutoConfig,
-    BertConfig,
-    BertForMaskedLM,
-    BertTokenizer,
-    DistilBertConfig,
-    DistilBertTokenizer,
-    GPT2Config,
-    GPT2LMHeadModel,
-    GPT2Tokenizer,
-    RobertaConfig,
-    RobertaForMaskedLM,
-    RobertaTokenizer,
-    AutoTokenizer,
-    AutoModelForMaskedLM,
-)
-from utils import init_gpu_params, logger, set_seed
-from datasets import load_dataset
-from models.modeling_distilbert import DistilBertForMaskedLM
+
+from utils import logger
+
+from collections import defaultdict
 
 def deserialize_variable_name(variable_name):
-    deserialized_variables = []
-    variable_list = variable_name.split("$")
-    if "[" in variable_list[1]:
-        left_l = int(variable_list[1].split(":")[1].strip("["))
-        right_l = int(variable_list[1].split(":")[2].strip("]"))
-    else:
-        left_l = int(variable_list[1].split(":")[-1])
-        right_l = int(variable_list[1].split(":")[-1])+1
-    if "[" in variable_list[2]:
-        left_h = int(variable_list[2].split(":")[1].strip("["))
-        right_h = int(variable_list[2].split(":")[2].strip("]"))
-    else:
-        left_h = int(variable_list[2].split(":")[-1])
-        right_h = int(variable_list[2].split(":")[-1])+1
+    deserialized_variables = [] 
+    params = variable_name.split("$")
 
-    left_d = int(variable_list[3].split(":")[0].strip("["))
-    right_d = int(variable_list[3].split(":")[1].strip("]"))
+    # get layer variable 
+    layer = int(params[1][-1])
     
-    for i in range(left_l, right_l):
-        for j in range(left_h, right_h):
-            deserialized_variable = f"$L:{i}$H:{j}$[{left_d}:{right_d}]"
-            deserialized_variables += [deserialized_variable]
+    # get head range 
+    head_vars = params[2].split(":")
+    head_l = int(head_vars[1].strip("["))
+    head_r = int(head_vars[2].strip("]"))
+
+    # get head nodes 
+    nodes = params[3].split(":")
+    nodes_l = int(nodes[0].strip("["))
+    nodes_r = int(nodes[1].strip("]"))
+
+    # iterate over all heads
+    for i in range(head_l, head_r):
+        var = (layer, i, slice(nodes_l, nodes_r))
+        deserialized_variables.append(var)
+
     return deserialized_variables
 
 class CausalDistiller:
@@ -152,7 +131,6 @@ class CausalDistiller:
         self.alpha_mse = params.alpha_mse
         self.alpha_cos = params.alpha_cos
         self.alpha_causal_ce = params.alpha_causal_ce
-        self.alpha_causal_cos = params.alpha_causal_cos
 
         self.mlm = params.mlm
         if self.mlm:
@@ -184,8 +162,6 @@ class CausalDistiller:
             self.last_loss_cos = 0
 
         self.last_loss_causal_ce = 0
-        self.last_teacher_interchange_efficacy = 0
-        self.last_student_interchange_efficacy = 0
         self.last_log = 0
 
         self.ce_loss_fct = nn.KLDivLoss(reduction="batchmean")
@@ -499,7 +475,6 @@ class CausalDistiller:
                     lm_labels=lm_labels,
                     dual_input_ids=dual_token_ids, 
                     dual_attention_mask=dual_attn_mask, 
-                    dual_lm_labels=dual_lm_labels,
                     interchange_mask=interchange_mask, 
                     dual_interchange_mask=dual_interchange_mask,
                 )
@@ -522,21 +497,11 @@ class CausalDistiller:
             self.save_checkpoint(checkpoint_name="pytorch_model.bin")
             logger.info("Training is finished")
 
-    def parse_model_variables(self, variable_name):
-        # name format: $L:9$H:[0:12]$[0:64]
-        variable_list = variable_name.split("$")
-        layer_number = int(variable_list[1].split(":")[-1])
-        head_number = int(variable_list[2].split(":")[-1])
-        LOC_left = int(variable_list[3].split(":")[0].strip("["))
-        LOC_right = int(variable_list[3].split(":")[1].strip("]"))
-        LOC = np.s_[LOC_left:LOC_right]
-        return layer_number, head_number, LOC
-
-    # TODO
     def get_activations(
         self, model, input_ids, attention_mask, 
         variable_names
     ):
+        # we don't want embedding activations
         if variable_names == "embeddings":
             return None
 
@@ -546,7 +511,7 @@ class CausalDistiller:
             attention_mask=attention_mask
         )
 
-        activations = []
+        total_activations = []
 
         # get head_dimension: 
         # should = 64 for default bert
@@ -555,29 +520,24 @@ class CausalDistiller:
         for v in variable_names:
             # hidden sate format: n tuple with embeddings + layer, each layer is another
             # tuple of format ((batch_size, sequence_length, hidden_size))
-
             # in this case, we want to extract the activation weights at each layer
-            layer_index, head_index, LOC = self.parse_model_variables(v)
+            layer_index, head_index, LOC = v
             
             hidden_states = outputs["hidden_states"]
             layer = hidden_states[layer_index]
-
-            # 12 attention heads, each attention head is 64 nodes wide
             head_hidden_states = layer[:,:, (head_index * head_dim):((head_index+1) * head_dim)]
 
-            activations.append(head_hidden_states[:,:,LOC])
+            # 12 attention heads, each attention head is 64 nodes wide
+            total_activations.append(head_hidden_states[:,:,LOC])
 
-        return activations
+        return total_activations
 
     def get_interchanged_variables_mapping(self, variable_names):
-        interchanged_variables_mapping = {}
+        interchanged_variables_mapping = defaultdict(list)
         for i, variable in enumerate(variable_names):
-            layer_index, head_index, LOC = self.parse_model_variables(variable)
-            if layer_index in interchanged_variables_mapping:
-                interchanged_variables_mapping[layer_index] += [(i, head_index, LOC)]
-            else:
-                interchanged_variables_mapping[layer_index] = [(i, head_index, LOC)]
-        
+            layer_index, head_index, LOC = variable
+            interchanged_variables_mapping[layer_index].append((i, head_index, LOC))
+
         return interchanged_variables_mapping
 
     # code taken from huggingface
@@ -684,7 +644,6 @@ class CausalDistiller:
         lm_labels: torch.tensor,
         dual_input_ids: torch.tensor, 
         dual_attention_mask: torch.tensor, 
-        dual_lm_labels: torch.tensor,
         interchange_mask: torch.tensor,
         dual_interchange_mask: torch.tensor,
         skip_update_iter=False,
@@ -710,7 +669,13 @@ class CausalDistiller:
         teacher_interchanged_variables_mapping = self.get_interchanged_variables_mapping(teacher_variable_names)
         student_interchanged_variables_mapping = self.get_interchanged_variables_mapping(student_variable_names)        
 
+        # counterfactual becomes x1 
         counterfactual_input_ids = input_ids
+        
+        dual_inputs = {
+            'input_ids': dual_input_ids,
+            'attention_mask': dual_attention_mask,
+        }
         
         if self.mlm:
             with torch.no_grad():
@@ -756,11 +721,6 @@ class CausalDistiller:
                 # perform a pass of the teacher on input x1
                 teacher_outputs = self.teacher(input_ids=input_ids, attention_mask=attention_mask)
 
-                
-                dual_inputs = {
-                    'input_ids': dual_input_ids,
-                    'attention_mask': dual_attention_mask,
-                }
                 # gather activations for another input x2
                 dual_counterfactual_activations_teacher = self.get_activations(
                     self.teacher,
@@ -807,10 +767,6 @@ class CausalDistiller:
         loss, loss_mse = update_loss("loss_mse", self.alpha_mse, loss, student_outputs)
         loss, loss_cos = update_loss("loss_cos", self.alpha_cos, loss, student_outputs)
 
-        dual_inputs = {
-            'input_ids': dual_input_ids,
-            'attention_mask': dual_attention_mask,
-        }
         # get activations with second input, x2
         dual_counterfactual_activations_student = self.get_activations(
             self.student,
@@ -818,13 +774,17 @@ class CausalDistiller:
             variable_names=student_variable_names
         )
 
+        interchange_inputs = {
+            "interchanged_variables": dual_counterfactual_activations_student,
+            "variable_names": student_interchanged_variables_mapping,
+            "interchange_mask": interchange_mask,
+            "dual_interchange_mask": dual_interchange_mask
+        }
+        # perform a pass through of the original input ids with new activations
         counterfactual_outputs_student = self.student(
             input_ids=counterfactual_input_ids,
             attention_mask=attention_mask,
-            interchanged_variables=dual_counterfactual_activations_student,
-            variable_names=student_interchanged_variables_mapping,
-            interchange_mask=interchange_mask,
-            dual_interchange_mask=dual_interchange_mask,
+            **interchange_inputs
         )
 
         # calculate causal loss - corresponds to L_ce in the paper,
