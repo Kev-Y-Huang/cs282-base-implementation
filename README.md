@@ -6,7 +6,7 @@ Project Members: Chelsea (Zixi) Chen, Kevin Huang, Steve Li
 
 ## How to Run
 
-This procedure requires some preprocessing of data. The original paper cites the original HuggingFact implementation of preprocessing/tokenizing data to be run for distillation. The procedure goes as follows:
+This procedure requires some preprocessing of data. The original paper cites the original HuggingFace implementation of preprocessing/tokenizing data to be run for distillation. The procedure goes as follows:
 
 ### 1. Tokenize Data
 
