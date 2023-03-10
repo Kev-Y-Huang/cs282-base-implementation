@@ -598,15 +598,15 @@ class BertEncoder(nn.Module):
 
             hidden_states = layer_outputs[0]
             
-            # we need to interchange!
+            
             if variable_names != None and variable_names != "embeddings" and i in variable_names:
-                assert interchanged_variables != None
-                for interchanged_variable in variable_names[i]:
-                    interchanged_activations = interchanged_variables[interchanged_variable[0]]
-                    start_index = interchanged_variable[1]*self.head_dimension + interchanged_variable[2].start
-                    stop_index = start_index + interchanged_variable[2].stop
-                    replacing_activations = interchanged_activations[dual_interchange_mask]
-                    hidden_states[...,start_index:stop_index][interchange_mask] = replacing_activations
+                if interchanged_variables != None:
+                    for interchanged_variable in variable_names[i]:
+                        interchanged_activations = interchanged_variables[interchanged_variable[0]]
+                        start_index = interchanged_variable[1]*self.head_dimension + interchanged_variable[2].start
+                        stop_index = start_index + interchanged_variable[2].stop
+                        replacing_activations = interchanged_activations[dual_interchange_mask]
+                        hidden_states[...,start_index:stop_index][interchange_mask] = replacing_activations
             
             if use_cache:
                 next_decoder_cache += (layer_outputs[-1],)

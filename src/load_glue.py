@@ -91,13 +91,19 @@ def tokenize(tokenizer, dataset, col):
     return train_dataset, val_dataset, test_dataset
 
 def load_glue_dataset(tokenizer, dataset_name):
+    print(f"loading {dataset_name} from GLUE...")
     dataset = load_dataset("glue", dataset_name)
+
+    # for d in dataset["test"]:
+    #     print(d["label"])
     config = GLUE_CONFIGS[dataset_name]
+    print(f"config: {config}")
+    print(f"tokenizing...")
     if len(config) == 2:
         train, val, test = tokenize_pair(tokenizer, dataset, **config)
     else:
         train, val, test = tokenize(tokenizer, dataset, **config)
-    
+    print(f"finished tokenizing!")
     return train, val, test
 
 def main():

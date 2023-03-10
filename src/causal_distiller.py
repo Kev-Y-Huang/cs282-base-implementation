@@ -32,11 +32,6 @@ from lm_seqs_dataset import LmSeqsDataset
 from transformers import get_linear_schedule_with_warmup
 from utils import logger
 
-# try:
-#     from torch.utils.tensorboard import SummaryWriter
-# except ImportError:
-#     from tensorboardX import SummaryWriter
-
 import argparse
 import json
 import os
@@ -68,38 +63,13 @@ from transformers import (
 from utils import init_gpu_params, logger, set_seed
 from datasets import load_dataset
 from counterfactual_utils import *
-# import wandb
 from models.modeling_distilbert import DistilBertForMaskedLM
-
-# Examples of interchange.
-# activations_counterfactual_teacher = get_activation_at(
-#     teacher_bert,
-#     batch["input_ids"],
-#     batch["attention_mask"],
-#     variable_names=["$L:1$H:1$[0:32]"]
-# )
-# interchange_with_activation_at(
-#     teacher_bert,
-#     batch["input_ids"],
-#     batch["attention_mask"],
-#     interchanged_variables=[torch.zeros(32, 512, 32)],
-#     variable_names=["$L:1$H:1$[0:32]"]
-# )
 
 class CausalDistiller:
     def __init__(
         self, params: dict, dataset: LmSeqsDataset, 
         token_probs: torch.tensor, student: nn.Module, teacher: nn.Module
-    ):
-        # if params.is_wandb:
-        #     run = wandb.init(
-        #         project="Causal-BERT-Distillation", 
-        #         entity="wuzhengx",
-        #         name=params.run_name,
-        #     )
-        #     wandb.config.update(params)
-        # self.is_wandb = params.is_wandb
-        
+    ):  
         logger.info("Initializing Distiller")
         self.params = params
         self.dump_path = params.dump_path
@@ -109,22 +79,26 @@ class CausalDistiller:
         self.student = student
         self.teacher = teacher
         
-        # causal neuron mappings.
-        self.deserialized_interchange_variable_mappings = []
+        self.deserialized_variable_mappings = []
+        def load_variable_names(m):
+            deserialized_variables = [] 
+            for variable in m:
+                deserialized_variables.append(deserialize_variable_name(variable))
+            return deserialized_variables
+        
+        # node mappings
         with open(params.neuron_mapping) as json_file:
-            neuron_mapping = json.load(json_file)
-            logger.info(f"Neuron Mapping: {neuron_mapping}")
-            interchange_variable_mappings = neuron_mapping["interchange_variable_mappings"]
+            logger.info(f"Loading neuron mapping {params.neuron_mapping}")
+            neuron_mapping_json = json.load(json_file)
+            interchange_variable_mappings = neuron_mapping_json["interchange_variable_mappings"]
             for m in interchange_variable_mappings:
-                teacher_deserialized_variables = []
-                for variable in m["teacher_variable_names"]:
-                    teacher_deserialized_variables.append(deserialize_variable_name(variable))
-                student_deserialized_variables = []
-                for variable in m["student_variable_names"]:
-                    student_deserialized_variables.append(deserialize_variable_name(variable))
-                self.deserialized_interchange_variable_mappings += [
-                    [teacher_deserialized_variables, student_deserialized_variables]
+                t_deserialized_variables = load_variable_names(m["teacher_variable_names"])
+                s_deserialized_variables = load_variable_names(m["student_variable_names"])
+                self.deserialized_variable_mappings += [
+                    [t_deserialized_variables, s_deserialized_variables]
                 ]
+        
+        print(self.deserialized_variable_mappings)
 
         self.student_config = student.config
         self.vocab_size = student.config.vocab_size
@@ -136,17 +110,13 @@ class CausalDistiller:
             sampler = DistributedSampler(dataset)
             
         if params.group_by_size:
-            groups = create_lengths_groups(lengths=dataset.lengths, k=params.max_model_input_size)
+            groups = create_lengths_groups(lengths=dataset.x1_lengths, k=params.max_model_input_size)
             sampler = GroupedBatchSampler(sampler=sampler, group_ids=groups, batch_size=params.batch_size)
         else:
             sampler = BatchSampler(sampler=sampler, batch_size=params.batch_size, drop_last=False)
-
-        # slower loader?
-        # self.dataloader = DataLoader(dataset=dataset, batch_sampler=sampler, collate_fn=dataset.batch_sequences)
+  
         self.dataloader = DataLoader(
             dataset=dataset, batch_sampler=sampler, collate_fn=dataset.batch_sequences,
-            # num_workers=8,
-            # pin_memory=True,
         )
 
         self.temperature = params.temperature
@@ -174,13 +144,6 @@ class CausalDistiller:
                 self.token_probs = self.token_probs.half()
         else:
             logger.info("Using CLM loss for LM step.")
-
-        self.interchange_mlm = params.interchange_mlm
-        self.interchange_prop = params.interchange_prop
-        self.interchange_max_token = params.interchange_max_token # if -1 then we don't restrict on this.
-        self.interchange_masked_token_only = params.interchange_masked_token_only
-        self.interchange_consecutive_only = params.interchange_consecutive_only
-        self.data_augment = params.data_augment
         
         self.epoch = 0
         self.n_iter = 0
@@ -262,15 +225,15 @@ class CausalDistiller:
                 logger.info("Using apex.parallel.DistributedDataParallel for distributed training.")
                 self.student = DistributedDataParallel(self.student)
             else:
+                # TODO
                 if params.local_rank == -1:
                     logger.info("Using nn.DataParallel for the teacher model.")
-                    # teacher also use multi-GPU.
                     self.teacher = torch.nn.DataParallel(self.teacher)
-                    self.teacher.to(torch.device("cuda")) # no rank is needed!
+                    self.teacher.to(torch.device("cuda")) 
 
                     logger.info("Using nn.DataParallel for the student model.")
                     self.student = torch.nn.DataParallel(self.student)
-                    self.student.to(torch.device("cuda")) # no rank is needed!
+                    self.student.to(torch.device("cuda"))
                 else:
                 
                     from torch.nn.parallel import DistributedDataParallel
@@ -282,7 +245,9 @@ class CausalDistiller:
                         output_device=params.local_rank,
                         find_unused_parameters=True,
                     )
-
+        else:
+            self.teacher.to(torch.device("cuda"))
+            self.student.to(torch.device("cuda"))
         self.is_master = params.is_master
         
         
@@ -427,87 +392,40 @@ class CausalDistiller:
         assert x.size(1) % 8 == 0
         return x, lengths
 
-    def prepare_interchange_mask(
+    # select 30% randomly of neurons to interchange 
+    def sample_interchange(
         self,
         lengths, dual_lengths,
         pred_mask, dual_pred_mask,
     ):        
-        # params
-        interchange_prop = self.interchange_prop
-        interchange_max_token = self.interchange_max_token # if -1 then we don't restrict on this.
-        interchange_masked_token_only = self.interchange_masked_token_only
-        interchange_consecutive_only = self.interchange_consecutive_only
-        
+
         interchange_mask = torch.zeros_like(pred_mask, dtype=torch.bool)
         dual_interchange_mask = torch.zeros_like(dual_pred_mask, dtype=torch.bool)
 
-        batch_size, max_seq_len = pred_mask.shape[0], pred_mask.shape[1]
-        _, dual_max_seq_len = dual_pred_mask.shape[0], dual_pred_mask.shape[1]
-        interchange_position = []
-        for i in range(0, batch_size):
-            min_len = min(lengths[i].tolist(), dual_lengths[i].tolist())
-            if interchange_consecutive_only:
-                if interchange_max_token != -1:
-                    interchange_count = min(interchange_max_token, int(min_len*interchange_prop))
-                else:
-                    interchange_count = int(min_len*interchange_prop)
-                start_index = random.randint(0, lengths[i].tolist()-interchange_count)
-                end_index = start_index + interchange_count
-                dual_start_index = random.randint(0, dual_lengths[i].tolist()-interchange_count)
-                dual_end_index = dual_start_index + interchange_count
-                interchange_mask[i][start_index:end_index] = 1
-                dual_interchange_mask[i][dual_start_index:dual_end_index] = 1
-            else:
-                # we follow these steps to sample the position:
-                # 1. sample positions in the main example
-                # 2. get the actual sampled positions
-                # 3. sample accordingly from the dual example
-                if interchange_masked_token_only:
-                    # a corner case we need to consider is that the masked token
-                    # numbers may differ across two examples.
-                    interchange_count = pred_mask[i].sum()
-                    if interchange_count > dual_lengths[i]:
-                        # not likely, but we need to handle this.
-                        interchange_count = dual_lengths[i]
-                    interchange_position = pred_mask[i].nonzero().view(-1).tolist()
-                    interchange_position = random.sample(interchange_position, interchange_count)
-                    interchange_mask[i][interchange_position] = 1
-                    dual_interchange_position = random.sample(range(dual_max_seq_len), interchange_count)
-                    dual_interchange_mask[i][dual_interchange_position] = 1
-                else:
-                    if interchange_max_token != -1:
-                        interchange_count = min(interchange_max_token, int(min_len*interchange_prop))
-                    else:
-                        interchange_count = int(min_len*interchange_prop)
-                    interchange_position = random.sample(range(max_seq_len), interchange_count)
-                    interchange_mask[i][interchange_position] = 1
-                    dual_interchange_position = random.sample(range(dual_max_seq_len), interchange_count)
-                    dual_interchange_mask[i][dual_interchange_position] = 1
+        # sequential interchanging
+        for i in range(0, self.params.batch_size):
+            num_interchange_1 = int(lengths[i] * 0.3)
+            num_interchange_2 = int(dual_lengths[i] * 0.3) 
 
-        # sanity checks
+            num_interchange = min(num_interchange_1, num_interchange_2)
+
+            start_1 = random.randint(0, lengths[i].tolist() - num_interchange)
+            end_1 = start_1 + num_interchange
+
+            start_2 = random.randint(0, lengths[i].tolist() - num_interchange)
+            end_2 = start_2 + num_interchange
+
+            for j in range(start_1, end_1):
+                interchange_mask[i][j] = 1 
+            
+            for j in range(start_2, end_2):
+                dual_interchange_mask[i][j] = 1
+
         assert interchange_mask.long().sum(dim=-1).tolist() == \
                 dual_interchange_mask.long().sum(dim=-1).tolist()
 
         return interchange_mask, dual_interchange_mask
-    
-    def prepare_interchange_position(
-        self, 
-        lengths, dual_lengths,
-        pred_mask, dual_pred_mask,
-    ):
-        interchange_prop = self.interchange_prop
-        batch_size = lengths.shape[0]
-        interchange_position = []
-        for i in range(0, batch_size):
-            min_len = min(lengths[i].tolist(), dual_lengths[i].tolist())
-            interchange_count = int(min_len*interchange_prop)
-            start_index = random.randint(0, lengths[i].tolist()-interchange_count)
-            end_index = start_index + interchange_count
-            dual_start_index = random.randint(0, dual_lengths[i].tolist()-interchange_count)
-            dual_end_index = dual_start_index + interchange_count
-            interchange_position += [[start_index, end_index, dual_start_index, dual_end_index]]
-        interchange_position = torch.tensor(interchange_position, dtype=torch.long).to(lengths.device, non_blocking=True)
-        return interchange_position
+
     
     def train(self):
         """
@@ -525,28 +443,31 @@ class CausalDistiller:
 
             iter_bar = tqdm(self.dataloader, desc="-Iter", disable=self.params.local_rank not in [-1, 0])
             for batch in iter_bar:
-                token_ids, lengths, dual_token_ids, dual_lengths = batch
+                # dual_token ids, dual_lengths: x2, y2
 
                 if self.params.n_gpu > 0:
-                    token_ids = token_ids.to(torch.device("cuda"), non_blocking=True)
-                    lengths = lengths.to(torch.device("cuda"), non_blocking=True)
-                    dual_token_ids = dual_token_ids.to(torch.device("cuda"), non_blocking=True)
-                    dual_lengths = dual_lengths.to(torch.device("cuda"), non_blocking=True)
-                
+                    batch = tuple(t.to(torch.device("cuda"), non_blocking=True) for t in batch)
+
+                token_ids, lengths, dual_token_ids, dual_lengths = batch
+
                 if self.mlm:
                     token_ids, attn_mask, lm_labels, pred_mask = self.prepare_batch_mlm(
                         batch=(token_ids, lengths)
                     )
+
+                    # prepare mlm mask for x2, y2
                     dual_token_ids, dual_attn_mask, dual_lm_labels, dual_pred_mask = self.prepare_batch_mlm(
                         batch=(dual_token_ids, dual_lengths)
                     )
                 else:
                     token_ids, attn_mask, lm_labels = self.prepare_batch_clm(batch=(token_ids, lengths))
+                    
+                    # prepare clm mask for x2, y2
                     dual_token_ids, dual_attn_mask, dual_lm_labels = self.prepare_batch_clm(
                         batch=(dual_token_ids, dual_lengths)
                     )
                     
-                interchange_mask, dual_interchange_mask = self.prepare_interchange_mask(
+                interchange_mask, dual_interchange_mask = self.sample_interchange(
                     lengths, dual_lengths,
                     pred_mask, dual_pred_mask,
                 )
@@ -560,8 +481,6 @@ class CausalDistiller:
                     dual_lm_labels=dual_lm_labels,
                     interchange_mask=interchange_mask, 
                     dual_interchange_mask=dual_interchange_mask,
-                    is_parallel=self.params.parallel_crossway,
-                    is_crossway=self.params.include_crossway,
                 )
                 iter_bar.update()
                 iter_bar.set_postfix(
@@ -582,70 +501,163 @@ class CausalDistiller:
             self.save_checkpoint(checkpoint_name="pytorch_model.bin")
             logger.info("Training is finished")
 
-    def step(
-        self, input_ids: torch.tensor, 
-        attention_mask: torch.tensor, 
-        lm_labels: torch.tensor,
-        dual_input_ids: torch.tensor, 
-        dual_attention_mask: torch.tensor, 
-        dual_lm_labels: torch.tensor,
-        interchange_mask: torch.tensor,
-        dual_interchange_mask: torch.tensor,
-        is_parallel=False,
-        is_crossway=False,
-    ):
-        if is_parallel:
-            # we starts to deprecate this approach...
-            assert False
-        else:
-            """
-            If it is not parallel, we will have two mini-step
-            within each step. The second step will only backprop
-            loss without updating the iteration, so the optimization
-            is not affected.
-            """
-            if is_crossway:
-                self._step(
-                    input_ids,
-                    attention_mask,
-                    lm_labels,
-                    dual_input_ids,
-                    dual_attention_mask,
-                    dual_lm_labels,
-                    interchange_mask,
-                    dual_interchange_mask,
-                    skip_update_iter=True,
-                )
-                # the second mini-step for the reversed pair.
-                self._step(
-                    dual_input_ids,
-                    dual_attention_mask,
-                    dual_lm_labels,
-                    input_ids,
-                    attention_mask,
-                    lm_labels,
-                    interchange_mask,
-                    dual_interchange_mask,
-                    skip_update_iter=False,
-                )
-            else:
-                """
-                This subroutine will be the normal distillation
-                with optional causal loss.
-                """
-                self._step(
-                    input_ids,
-                    attention_mask,
-                    lm_labels,
-                    dual_input_ids,
-                    dual_attention_mask,
-                    dual_lm_labels,
-                    interchange_mask,
-                    dual_interchange_mask,
-                    skip_update_iter=False,
-                )
+    # TODO
+    def parse_model_variables(self, variable_name):
+        # name format: $L:9$H:[0:12]$[0:64]
+        variable_list = variable_name.split("$")
+        layer_number = int(variable_list[1].split(":")[-1])
+        head_number = int(variable_list[2].split(":")[-1])
+        LOC_left = int(variable_list[3].split(":")[0].strip("["))
+        LOC_right = int(variable_list[3].split(":")[1].strip("]"))
+        LOC = np.s_[LOC_left:LOC_right]
+        return layer_number, head_number, LOC
 
-    def _step(
+    # TODO
+    def get_activations(
+        self, model, input_ids, attention_mask, 
+        variable_names
+    ):
+        if variable_names == "embeddings":
+            return None
+
+        # get outputs from model
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask
+        )
+
+        activations = []
+
+        # get head_dimension: 
+        # should = 64 for default bert
+        head_dim = model.config.hidden_size // model.config.num_attention_heads
+
+        for v in variable_names:
+            # hidden sate format: n tuple with embeddings + layer, each layer is a nother
+            # tuple of format ((batch_size, sequence_length, hidden_size))
+
+            # in this case, we want to extract the activation weights at each layer
+            layer_index, head_index, LOC = self.parse_model_variables(v)
+            hidden_states = outputs["hidden_states"]
+            layer = hidden_states[layer_index]
+
+            # 12 attention heads, each attention head is 64 nodes wide
+            head_hidden_states = layer[:,:, (head_index * head_dim):((head_index+1) * head_dim)]
+
+            activations.append(head_hidden_states[:,:,LOC])
+
+        return activations
+
+    def get_interchanged_variables_mapping(self, variable_names):
+        interchanged_variables_mapping = {}
+        for i, variable in enumerate(variable_names):
+            layer_index, head_index, LOC = self.parse_model_variables(variable)
+            if layer_index in interchanged_variables_mapping:
+                interchanged_variables_mapping[layer_index] += [(i, head_index, LOC)]
+            else:
+                interchanged_variables_mapping[layer_index] = [(i, head_index, LOC)]
+        
+        return interchanged_variables_mapping
+
+    # code taken from huggingface
+    def calculate_loss(self, 
+        student_outputs, 
+        t_hidden_states, 
+        t_logits, 
+        lm_labels,
+        attention_mask):
+        if t_logits is not None:
+            # regular loss
+            s_logits, s_hidden_states = student_outputs["logits"], student_outputs["hidden_states"]
+            assert s_logits.size() == t_logits.size()
+            # https://github.com/peterliht/knowledge-distillation-pytorch/blob/master/model/net.py#L100
+            # https://github.com/peterliht/knowledge-distillation-pytorch/issues/2
+            if self.params.restrict_ce_to_mask:
+                mask = (lm_labels > -1).unsqueeze(-1).expand_as(s_logits)  # (bs, seq_length, voc_size)
+            else:
+                mask = attention_mask.unsqueeze(-1).expand_as(s_logits)  # (bs, seq_length, voc_size)
+            s_logits_slct = torch.masked_select(s_logits, mask)  # (bs * seq_length * voc_size) modulo the 1s in mask
+            s_logits_slct = s_logits_slct.view(-1, s_logits.size(-1))  # (bs * seq_length, voc_size) modulo the 1s in mask
+            t_logits_slct = torch.masked_select(t_logits, mask)  # (bs * seq_length * voc_size) modulo the 1s in mask
+            t_logits_slct = t_logits_slct.view(-1, s_logits.size(-1))  # (bs * seq_length, voc_size) modulo the 1s in mask
+            assert t_logits_slct.size() == s_logits_slct.size()
+
+            loss_ce = (
+                self.ce_loss_fct(
+                    nn.functional.log_softmax(s_logits_slct / self.temperature, dim=-1),
+                    nn.functional.softmax(t_logits_slct / self.temperature, dim=-1),
+                )
+                * (self.temperature) ** 2
+            )
+            student_outputs["loss_ce"] = loss_ce
+
+            # other distillation loss.
+            if self.alpha_mlm > 0.0:
+                loss_mlm = self.lm_loss_fct(s_logits.view(-1, s_logits.size(-1)), lm_labels.view(-1))
+                student_outputs["loss_mlm"] = loss_mlm
+            if self.alpha_clm > 0.0:
+                shift_logits = s_logits[..., :-1, :].contiguous()
+                shift_labels = lm_labels[..., 1:].contiguous()
+                loss_clm = self.lm_loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                student_outputs["loss_mlm"] = loss_clm
+            if self.alpha_mse > 0.0:
+                loss_mse = self.mse_loss_fct(s_logits_slct, t_logits_slct) / s_logits_slct.size(
+                    0
+                )  # Reproducing batchmean reduction
+                student_outputs["loss_mse"] = loss_mse
+            if self.alpha_cos > 0.0:
+                s_hidden_states = s_hidden_states[-1]  # (bs, seq_length, dim)
+                t_hidden_states = t_hidden_states[-1]  # (bs, seq_length, dim)
+                mask = attention_mask.unsqueeze(-1).expand_as(s_hidden_states)  # (bs, seq_length, dim)
+                assert s_hidden_states.size() == t_hidden_states.size()
+                dim = s_hidden_states.size(-1)
+
+                s_hidden_states_slct = torch.masked_select(s_hidden_states, mask)  # (bs * seq_length * dim)
+                s_hidden_states_slct = s_hidden_states_slct.view(-1, dim)  # (bs * seq_length, dim)
+                t_hidden_states_slct = torch.masked_select(t_hidden_states, mask)  # (bs * seq_length * dim)
+                t_hidden_states_slct = t_hidden_states_slct.view(-1, dim)  # (bs * seq_length, dim)
+
+                target = s_hidden_states_slct.new(s_hidden_states_slct.size(0)).fill_(1)  # (bs * seq_length,)
+                loss_cos = self.cosine_loss_fct(s_hidden_states_slct, t_hidden_states_slct, target)
+                student_outputs["loss_cos"] = loss_cos
+            
+            return student_outputs
+
+    def calculate_causal_loss(self, 
+        student_outputs,
+        lm_labels,
+        attention_mask,
+        causal_t_logits,
+        ):
+
+        # taken from Huggingface distillation module - calculating L_CE
+        causal_s_logits, causal_s_hidden_states = \
+            student_outputs["logits"], student_outputs["hidden_states"]
+        assert causal_s_logits.size() == causal_t_logits.size()
+        # https://github.com/peterliht/knowledge-distillation-pytorch/blob/master/model/net.py#L100
+        # https://github.com/peterliht/knowledge-distillation-pytorch/issues/2
+        if self.params.restrict_ce_to_mask:
+            causal_mask = (lm_labels > -1).unsqueeze(-1).expand_as(causal_s_logits)  # (bs, seq_length, voc_size)
+        else:
+            causal_mask = attention_mask.unsqueeze(-1).expand_as(causal_s_logits)  # (bs, seq_length, voc_size)
+        causal_s_logits_slct = torch.masked_select(causal_s_logits, causal_mask)  # (bs * seq_length * voc_size) modulo the 1s in mask
+        causal_s_logits_slct = causal_s_logits_slct.view(-1, causal_s_logits.size(-1))  # (bs * seq_length, voc_size) modulo the 1s in mask
+        causal_t_logits_slct = torch.masked_select(causal_t_logits, causal_mask)  # (bs * seq_length * voc_size) modulo the 1s in mask
+        causal_t_logits_slct = causal_t_logits_slct.view(-1, causal_s_logits.size(-1))  # (bs * seq_length, voc_size) modulo the 1s in mask
+        assert causal_t_logits_slct.size() == causal_s_logits_slct.size()
+        
+        causal_loss_ce = (
+            self.ce_loss_fct(
+                nn.functional.log_softmax(causal_s_logits_slct / self.temperature, dim=-1),
+                nn.functional.softmax(causal_t_logits_slct / self.temperature, dim=-1),
+            )
+            * (self.temperature) ** 2
+        )
+        student_outputs["causal_loss_ce"] = causal_loss_ce
+        
+        return student_outputs
+
+    def step(
         self, input_ids: torch.tensor, 
         attention_mask: torch.tensor, 
         lm_labels: torch.tensor,
@@ -666,141 +678,143 @@ class CausalDistiller:
         attention_mask/dual_attention_mask: `torch.tensor(bs, seq_length)` - The attention mask for self attention.
         lm_labels/dual_lm_labels: `torch.tensor(bs, seq_length)` - The language modeling labels (mlm labels for MLM and clm labels for CLM).
         """
-        # preparing for causal distillation.
-        # we randomly select the pool of neurons to interchange.
-        selector = random.randint(0, len(self.deserialized_interchange_variable_mappings)-1)
-        interchange_variable_mapping = self.deserialized_interchange_variable_mappings[selector]
+
+        # select random variable names for interchange
+        selector = random.randint(0, len(self.deserialized_variable_mappings)-1)
+        interchange_variable_mapping = self.deserialized_variable_mappings[selector]
         teacher_variable_names = random.choice(interchange_variable_mapping[0])
         student_variable_names = random.choice(interchange_variable_mapping[1])
-        teacher_interchanged_variables_mapping = {}
-        student_interchanged_variables_mapping = {}
-        # we need to do the interchange here.
-        for i, variable in enumerate(teacher_variable_names):
-            layer_index, head_index, LOC = parse_variable_name(variable)
-            if layer_index in teacher_interchanged_variables_mapping:
-                teacher_interchanged_variables_mapping[layer_index] += [(i, head_index, LOC)]
-            else:
-                teacher_interchanged_variables_mapping[layer_index] = [(i, head_index, LOC)]
-        for i, variable in enumerate(student_variable_names):
-            layer_index, head_index, LOC = parse_variable_name(variable)
-            if layer_index in student_interchanged_variables_mapping:
-                student_interchanged_variables_mapping[layer_index] += [(i, head_index, LOC)]
-            else:
-                student_interchanged_variables_mapping[layer_index] = [(i, head_index, LOC)]
-        
-        # ugly overwrite here, but consider other elegant way.
-        if self.data_augment:
-            teacher_variable_names = "embeddings"
-            student_variable_names = "embeddings"
-            teacher_interchanged_variables_mapping = "embeddings"
-            student_interchanged_variables_mapping = "embeddings"
-        if self.data_augment:
-            replacing_activations = dual_input_ids[dual_interchange_mask]
-            counterfactual_input_ids = input_ids.clone()
-            counterfactual_input_ids[interchange_mask] = replacing_activations
-        else:
-            counterfactual_input_ids = input_ids
+
+        # perform interchange here
+        teacher_interchanged_variables_mapping = self.get_interchanged_variables_mapping(teacher_variable_names)
+        student_interchanged_variables_mapping = self.get_interchanged_variables_mapping(student_variable_names)        
+
+        counterfactual_input_ids = input_ids
         
         if self.mlm:
             with torch.no_grad():
-                # teacher forward pass normal.
-                teacher_outputs = self.teacher(
-                    input_ids=input_ids, attention_mask=attention_mask
-                )  # (bs, seq_length, voc_size)
-                # dual on main example
-                # teacher forward pass for interchange variables.
+                """
+                    Within a training step: 
+                        given a sample x1, we pass that through the teacher 
+                        After a single pass we gather the activations for a second input x2 (no grad here) 
+
+                        We then replace the values of the neurons
+                        from the teacher model with the values after inputting x1 with the activations
+                         after inputting x2
+
+                        we do the same with the student model 
+
+                        using these new interchanged models, we calculate the loss using the output 
+                        of x2 between both the teacher and the student model
+
+                        in the end, an intervention operation is the output state we get from a model
+                        for an input x2 but with the neurons N set to the values
+                        obtained when processing input x1
+
+                    Here the paper states that: 
+                    GETVAL(M, x, N) = gets the set of values that N takes when 
+                        processing x --> getting the activations of the neurons N 
+                        - in the case of an output, then GETVALS is the output of model M 
+                    
+                    SETVAL(M, N, v) = returns a new neural model where neurons N are 
+                            set to constant value v in the model M
+
+                        T_a = SETVAL(T, N_t, GETVAL(T, x_1, N_t))
+                            where N_t are the neurons of T,
+                            x_1 is an input, 
+                        
+                        The operation here basically is saying:
+                            - get the activations of the taecher model at an input x_1,
+                              and set the neurons of the taecher model to the activations
+                    
+                    an INTINV operation returns the output state from a model 
+                    for an input x2, but wiht neurons set to the values obtained when 
+                    processing input x1
+
+                    The reason why this works is because 
+                """
+                # perform a pass of the teacher on input x1
+                teacher_outputs = self.teacher(input_ids=input_ids, attention_mask=attention_mask)
+
                 
-                dual_counterfactual_activations_teacher = get_activation_at(
+                dual_inputs = {
+                    'input_ids': dual_input_ids,
+                    'attention_mask': dual_attention_mask,
+                }
+                # gather activations for another input x2
+                dual_counterfactual_activations_teacher = self.get_activations(
                     self.teacher,
-                    dual_input_ids, # this is different!
-                    dual_attention_mask, # this is different!
+                    **dual_inputs,
                     variable_names=teacher_variable_names
                 )
-                # teacher forward pass for interchanged outputs.
-                counterfactual_outputs_teacher = self.teacher(
-                    input_ids=counterfactual_input_ids, # this is different!
-                    attention_mask=attention_mask, # this is different!
-                    interchanged_variables=dual_counterfactual_activations_teacher,
-                    variable_names=teacher_interchanged_variables_mapping,
-                    interchange_mask=interchange_mask,
-                    dual_interchange_mask=dual_interchange_mask,
-                )
+                
+                counterfactual_inputs = {
+                    'input_ids': counterfactual_input_ids,
+                    'attention_mask': attention_mask,
+                    'interchanged_variables': dual_counterfactual_activations_teacher,
+                    'variable_names': teacher_interchanged_variables_mapping,
+                    'interchange_mask': interchange_mask,
+                    'dual_interchange_mask': dual_interchange_mask,
+                }
+                # perform another pass with second input with interchanged nodes
+                counterfactual_outputs_teacher = self.teacher(**counterfactual_inputs)
 
-            t_logits, t_hidden_states = \
-                teacher_outputs["logits"], teacher_outputs["hidden_states"]
-            student_outputs = self.student(
-                input_ids=input_ids, attention_mask=attention_mask,
-                t_logits=t_logits,
-                t_hidden_states=t_hidden_states,
-                temperature=self.temperature,
-                restrict_ce_to_mask=self.params.restrict_ce_to_mask,
-                lm_labels=lm_labels,
-                alpha_mlm=self.alpha_mlm,
-                alpha_clm=self.alpha_clm,
-                alpha_mse=self.alpha_mse,
-                alpha_cos=self.alpha_cos,
-            )  # (bs, seq_length, voc_size)
+            # logits from the teacher are then used to guide loss for the student
+            t_logits, t_hidden_states = teacher_outputs["logits"], teacher_outputs["hidden_states"]
+            student_inputs = {
+                'input_ids': input_ids,
+                'attention_mask': attention_mask,
+            }
+            student_outputs = self.student(**student_inputs)   # (bs, seq_length, voc_size)
             s_logits, s_hidden_states = student_outputs["logits"], student_outputs["hidden_states"]
             causal_t_logits, causal_t_hidden_states = \
                 counterfactual_outputs_teacher["logits"], counterfactual_outputs_teacher["hidden_states"]
         else:
-            assert False # we are not supporting this branch!
-        
-        # standard losses.
+            assert False
+
+        # calculate initial loss for student
+        student_outputs = self.calculate_loss(student_outputs, t_hidden_states, t_logits, lm_labels, attention_mask)
         loss_ce = student_outputs["loss_ce"].mean() if self.multi_gpu else student_outputs["loss_ce"]
         loss = self.alpha_ce * loss_ce
 
-        if self.alpha_mlm > 0.0:
-            loss_mlm = student_outputs["loss_mlm"].mean() if self.multi_gpu else student_outputs["loss_mlm"]
-            loss += self.alpha_mlm * loss_mlm
-        if self.alpha_clm > 0.0:
-            loss_clm = student_outputs["loss_clm"].mean() if self.multi_gpu else student_outputs["loss_clm"]
-            loss += self.alpha_clm * loss_clm
-        if self.alpha_mse > 0.0:
-            loss_mse = student_outputs["loss_mse"].mean() if self.multi_gpu else student_outputs["loss_mse"]
-            loss += self.alpha_mse * loss_mse
-        if self.alpha_cos > 0.0:
-            loss_cos = student_outputs["loss_cos"].mean() if self.multi_gpu else student_outputs["loss_cos"]
-            loss += self.alpha_cos * loss_cos
-            
-        # we need to get causal distillation loss!
-        dual_counterfactual_activations_student = get_activation_at(
+        def update_loss(loss_name, loss_value, loss, outputs):
+            loss_ = 0
+            if loss_value > 0.0:
+                loss_ = outputs[loss_name].mean() if self.multi_gpu else outputs[loss_name]
+                loss += loss_value * loss_ 
+            return loss, loss_
+
+        loss, loss_mlm = update_loss("loss_mlm", self.alpha_mlm, loss, student_outputs)
+        loss, loss_clm = update_loss("loss_clm", self.alpha_clm, loss, student_outputs)
+        loss, loss_mse = update_loss("loss_mse", self.alpha_mse, loss, student_outputs)
+        loss, loss_cos = update_loss("loss_cos", self.alpha_cos, loss, student_outputs)
+
+        dual_inputs = {
+            'input_ids': dual_input_ids,
+            'attention_mask': dual_attention_mask,
+        }
+        # get activations with second input, x2
+        dual_counterfactual_activations_student = self.get_activations(
             self.student,
-            dual_input_ids, # this is different!
-            dual_attention_mask, # this is different!
+            **dual_inputs,
             variable_names=student_variable_names
         )
         # dual on main.
         counterfactual_outputs_student = self.student(
-            input_ids=counterfactual_input_ids, # this is different!
-            attention_mask=attention_mask, # this is different!
-            # interchange.
+            input_ids=counterfactual_input_ids,
+            attention_mask=attention_mask,
             interchanged_variables=dual_counterfactual_activations_student,
             variable_names=student_interchanged_variables_mapping,
             interchange_mask=interchange_mask,
             dual_interchange_mask=dual_interchange_mask,
-            # loss.
-            t_logits=t_logits,
-            t_hidden_states=t_hidden_states,
-            causal_t_logits=causal_t_logits,
-            causal_t_hidden_states=causal_t_hidden_states,
-            s_logits=s_logits,
-            s_hidden_states=s_hidden_states,
-            temperature=self.temperature,
-            restrict_ce_to_mask=self.params.restrict_ce_to_mask,
         )
-        # sanity check.
-        assert "loss_ce" not in counterfactual_outputs_student
-        assert "loss_mlm" not in counterfactual_outputs_student
-        assert "loss_clm" not in counterfactual_outputs_student
-        assert "loss_mse" not in counterfactual_outputs_student
-        assert "loss_cos" not in counterfactual_outputs_student
-        causal_loss_ce = counterfactual_outputs_student["causal_loss_ce"].mean() if self.multi_gpu else counterfactual_outputs_student["causal_loss_ce"]
-        causal_loss_cos = counterfactual_outputs_student["causal_loss_cos"].mean() if self.multi_gpu else counterfactual_outputs_student["causal_loss_cos"]
-        if self.alpha_causal_ce > 0.0:
-            loss += self.alpha_causal_ce * causal_loss_ce
-        if self.alpha_causal_cos > 0.0:
-            loss += self.alpha_causal_cos * causal_loss_cos
+
+        # calculate causal loss - corresponds to L_ce in the paper,
+        # essentially the same as the usual task in original distillation paper
+        # except model outputs are now the interchanged form
+        counterfactual_outputs_student = self.calculate_causal_loss(
+            counterfactual_outputs_student, lm_labels, attention_mask, causal_t_logits)
+        loss, causal_loss_ce = update_loss("causal_loss_ce", self.alpha_causal_ce, loss, counterfactual_outputs_student)
                 
         self.total_loss_epoch += loss.item()
         self.last_loss = loss.item()
@@ -813,13 +827,9 @@ class CausalDistiller:
             self.last_loss_mse = loss_mse.item()
         if self.alpha_cos > 0.0:
             self.last_loss_cos = loss_cos.item()
-        # optional recording of the value.
+
+        # for logging purposes
         self.last_loss_causal_ce = causal_loss_ce.item()
-        # optional recording of the value.
-        self.last_loss_causal_cos = causal_loss_cos.item()
-        # record efficacy of the interchange. (we are not updating these fields for now.)
-        self.last_teacher_interchange_efficacy = 0.0
-        self.last_student_interchange_efficacy = 0.0
             
         self.optimize(loss, skip_update_iter=skip_update_iter)
 

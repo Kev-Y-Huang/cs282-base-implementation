@@ -12,15 +12,15 @@ from torch.utils.data import (
 from tqdm import tqdm, trange
 import evaluate as e
 
+from load_glue import *
 
 from shap_utils.utils import text as get_text
 import shap
 
 max_length = 128
-NUM_EPOCHS = 4
+NUM_EPOCHS = 3
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 STUDENT_MODELS = [
     "huawei-noah/TinyBERT_General_4L_312D",
     "distilbert-base-uncased",
@@ -32,16 +32,6 @@ student = "distilbert-base-uncased"
 
 lsm = torch.nn.LogSoftmax(dim=-1)
 
-# class KDBertForSequenceClassification(BertForSequenceClassification):
-#     def __init__(self, teacher):
-#         self.config = deepcopy(teacher.config)
-#         # self.config.update({"num_hidden_layers": num_layers})
-#         # self.config.update({"attention_probs_dropout_prob":0,"hidden_dropout_prob":0})
-#         super().__init__(self.config)
-
-#         self.embeddings = self.bert.embeddings
-#         print(self.bert.embeddings)
-
 class DistilledModel(nn.Module):
     def __init__(self, type):
         super().__init__()
@@ -51,42 +41,6 @@ class DistilledModel(nn.Module):
     def forward(self, **inputs):
         x = self.model(**inputs) 
         return x
-
-def calculate_shapley_values(models, tokenizer, texts, text_to_model):
-    bsize = 1
-
-    model = models[0]
-
-    def predict(x):
-        # TODO: need to set indices based off of positive or negative results
-        # print("x.toList(): ", x.tolist())
-        inputs = tokenizer(
-            x.tolist(),
-            return_tensors="pt",
-            truncation=True,
-            padding=True,
-        ).to(device)
-        model_output_dict = model(**inputs)
-        logits = lsm(model_output_dict["logits"].detach().cpu()).numpy()
-        logits = logits[:, 1]
-        return logits
-
-    sorted_dict = OrderedDict()
-    explainer = shap.Explainer(predict, tokenizer)
-    cur_start = 0
-    while cur_start < len(texts):
-
-        texts_ = texts[cur_start: cur_start + bsize]
-        model = models[text_to_model[texts_[0]]]
-        # print("sentence: ", texts_[0], "model index: ", text_to_model[texts_[0]])
-        shap_values = explainer(texts_)
-        shap_text = get_text(shap_values)
-
-        for t in shap_text:
-            sorted_dict[t] = shap_text[t]["span"]
-        cur_start += bsize
-
-    return sorted_dict
 
 def train(model, dataloader):
     num_training_steps = NUM_EPOCHS * len(dataloader)
@@ -98,11 +52,11 @@ def train(model, dataloader):
         num_warmup_steps=0,
         num_training_steps=num_training_steps,
     )
+    print("traiing")
     model.train()
     for step in trange(NUM_EPOCHS):
         for n, inputs in enumerate(tqdm(dataloader)):
             inputs = {k: v.to(device) for k, v in inputs.items()}
-
             model_output_dict = model(**inputs)
 
             loss = model_output_dict["loss"]
@@ -114,61 +68,59 @@ def train(model, dataloader):
 
     return model
 
-def evaluate(model, dataloader):
-    metric = e.load("glue", "sst2")
+def evaluate(model, dataloader, glue_type):
+    metric = e.load("glue", glue_type)
     model.eval()
     val_acc = 0
     
     for n, inputs in enumerate(tqdm(dataloader)):
         inputs = {k: v.to(device) for k, v in inputs.items()}
+
         with torch.no_grad():
             outputs = model(**inputs)
         
         logits = outputs.logits
-        predictions = torch.argmax(logits, dim=-1)
+        if glue_type != "stsb":
+            predictions = torch.argmax(logits, dim=-1)
+        else:
+            predictions = logits[:, 0]
+        # predictions, labels = outputs
+        # logits = outputs.logits
+        # # # predictions = torch.argmax(logits, dim=-1)
+        # predictions = logits[:, 0]
         metric.add_batch(predictions=predictions, references=inputs["labels"])
 
     print(metric.compute())
-    all_logits = [0 if x[0] > x[1] else 1 for x in all_logits]
 
     
 def tokenization(tokenzier, example):
     return tokenzier(example["text"], 
             truncation=True,
             padding=True)
+
+glue_type = "cola"
 def main():
-    model = DistilBertForSequenceClassification.from_pretrained("./results/s_distilbert_t_bert_data_wikitext_dataset_seed_42_mlm_True_ce_0.25_mlm_0.25_cos_0.25_causal-ce_0.25_causal-cos_0.25_nm_single_middle_layer_6_crossway_False_int-prop_0.3_consec-token_True_masked-token_False_max-int-token_-1_eff-bs_240/")
-    
-    # load train, test, val from load_glue 
-    # ex. train, test, val = load_glue_dataset(tokenizer, "sst2")
-    #     train_dataloader = DataLoader()...
+    model = DistilledModel("./results/s_distilbert_t_bert_data_wikitext_dataset_seed_42_mlm_True_ce_0.25_mlm_0.25_cos_0.25_causal-ce_0.25_causal-cos_0.25_nm_single_middle_layer_6_crossway_False_int-prop_0.3_consec-token_True_masked-token_False_max-int-token_-1_eff-bs_240")
+    model.to(device)
+    tokenizer = AutoTokenizer.from_pretrained(teacher)
+    train_dataset, val_dataset, _ = load_glue_dataset(tokenizer, glue_type)
 
+    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+    train_dataset.set_format(type="torch", columns=["input_ids", "token_type_ids", "attention_mask", "labels"])
+    train_dataset = train_dataset.remove_columns(["token_type_ids"])
 
-    # dataset = load_dataset("rotten_tomatoes")
-    # teacher_model = AutoModelForSequenceClassification.from_pretrained(teacher)
-    # student_model = KDBertForSequenceClassification(teacher=teacher_model)
+    val_dataset.set_format(type="torch", columns=["input_ids", "token_type_ids", "attention_mask", "labels"])
+    val_dataset = val_dataset.remove_columns(["token_type_ids"])
+    print(train_dataset, val_dataset)
 
+    train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=4, collate_fn=data_collator)
+    val_dataloader = DataLoader(val_dataset, batch_size=4, collate_fn=data_collator)
 
-    
-    # teacher_model = Model(teacher)
-    # teacher_tokenizer = AutoTokenizer.from_pretrained(teacher)
-    # teacher_model.to(device)
-    # # student_model = Model(student)
-    # # teacher_tokenizer = AutoTokenizer.from_pretrained(student)
-    # data_collator = DataCollatorWithPadding(tokenizer=teacher_tokenizer)
+    model = train(model, train_dataloader)
+    evaluate(model, val_dataloader, glue_type)
 
-    # train_dataset = dataset["train"].map(lambda e: tokenization(teacher_tokenizer, e), batched=True)
-    # train_dataset.set_format(type="torch", columns=["input_ids", "token_type_ids", "attention_mask", "label"])
-    # train_dataset = train_dataset.rename_column("label", "labels")
-    # train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=4, collate_fn=data_collator)
+    print(glue_type)
 
-    # test_dataset = dataset["test"].map(lambda e: tokenization(teacher_tokenizer, e), batched=True)
-    # test_dataset.set_format(type="torch", columns=["input_ids", "token_type_ids", "attention_mask", "label"])
-    # test_dataset = test_dataset.rename_column("label", "labels")
-    # test_dataloader = DataLoader(test_dataset, batch_size=4, collate_fn=data_collator)
-    # # print(dataset)
-    # teacher_model = train(teacher_model, train_dataloader)
-    # evaluate(teacher_model, test_dataloader)
 
 if __name__ == "__main__":
     main()

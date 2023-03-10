@@ -77,7 +77,6 @@ def sanity_checks(args):
     )
     assert os.path.isfile(args.student_config)
     if args.student_pretrained_weights is not None:
-        print(args.student_pretrained_weights)
         assert os.path.isfile(args.student_pretrained_weights)
 
     if args.freeze_token_type_embds:
@@ -111,10 +110,6 @@ def prepare_distiller(args):
     init_gpu_params(args)
     set_seed(args)
     # More validations #
-    if args.parallel_crossway:
-        assert args.include_crossway
-    if not args.include_crossway:
-        assert not args.parallel_crossway
     if args.is_master:
         if os.path.exists(args.dump_path):
             if not args.force:
@@ -415,11 +410,10 @@ if __name__ == "__main__":
     args.run_name = run_name
     args.dump_path = os.path.join(args.dump_path, args.run_name)
     sanity_checks(args)
-    # for arXiv, we enforce the following settings.
+
     assert not args.include_crossway
     assert not args.parallel_crossway
     
     distiller = prepare_distiller(args)
     
-    logger.info("Hey Zen: Let's go get some drinks.")
     distiller.train()
