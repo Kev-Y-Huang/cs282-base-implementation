@@ -522,7 +522,6 @@ class CausalDistiller:
             self.save_checkpoint(checkpoint_name="pytorch_model.bin")
             logger.info("Training is finished")
 
-    # TODO
     def parse_model_variables(self, variable_name):
         # name format: $L:9$H:[0:12]$[0:64]
         variable_list = variable_name.split("$")
@@ -551,14 +550,15 @@ class CausalDistiller:
 
         # get head_dimension: 
         # should = 64 for default bert
-        head_dim = model.config.hidden_size // model.config.num_attention_heads
+        head_dim = 64
 
         for v in variable_names:
-            # hidden sate format: n tuple with embeddings + layer, each layer is a nother
+            # hidden sate format: n tuple with embeddings + layer, each layer is another
             # tuple of format ((batch_size, sequence_length, hidden_size))
 
             # in this case, we want to extract the activation weights at each layer
             layer_index, head_index, LOC = self.parse_model_variables(v)
+            
             hidden_states = outputs["hidden_states"]
             layer = hidden_states[layer_index]
 
@@ -752,7 +752,6 @@ class CausalDistiller:
                     for an input x2, but wiht neurons set to the values obtained when 
                     processing input x1
 
-                    The reason why this works is because 
                 """
                 # perform a pass of the teacher on input x1
                 teacher_outputs = self.teacher(input_ids=input_ids, attention_mask=attention_mask)
@@ -787,9 +786,7 @@ class CausalDistiller:
                 'attention_mask': attention_mask,
             }
             student_outputs = self.student(**student_inputs)   # (bs, seq_length, voc_size)
-            s_logits, s_hidden_states = student_outputs["logits"], student_outputs["hidden_states"]
-            causal_t_logits, causal_t_hidden_states = \
-                counterfactual_outputs_teacher["logits"], counterfactual_outputs_teacher["hidden_states"]
+            causal_t_logits = counterfactual_outputs_teacher["logits"]
         else:
             assert False
 
