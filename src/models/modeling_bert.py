@@ -609,11 +609,10 @@ class BertEncoder(nn.Module):
 
                     # target interchange neurons are only within activation_locations 
                     # at a specific attention head 
-                    neuron_start = head * self.head_dimension + activation_locations.start
-                    neuron_end = neuron_start + activation_locations.stop 
-
+                    neuron_range = slice(head * self.head_dimension + activation_locations.start,
+                        head * self.head_dimension + activation_locations.start + activation_locations.stop)
                     # apply mask 
-                    hidden_states[:,:,neuron_start:neuron_end][interchange_mask] = counterfactual_activations[dual_interchange_mask]
+                    hidden_states[:,:,neuron_range][interchange_mask] = counterfactual_activations[dual_interchange_mask]
 
               
             if use_cache:

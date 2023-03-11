@@ -224,7 +224,7 @@ class CausalDistiller:
                 logger.info("Using apex.parallel.DistributedDataParallel for distributed training.")
                 self.student = DistributedDataParallel(self.student)
             else:
-                # TODO
+       
                 if params.local_rank == -1:
                     logger.info("Using nn.DataParallel for the teacher model.")
                     self.teacher = torch.nn.DataParallel(self.teacher)
@@ -245,6 +245,7 @@ class CausalDistiller:
                         find_unused_parameters=True,
                     )
         else:
+            # for signle gpu usage
             self.teacher.to(torch.device("cuda"))
             self.student.to(torch.device("cuda"))
         self.is_master = params.is_master
@@ -519,22 +520,22 @@ class CausalDistiller:
             # hidden sate format: n tuple with embeddings + layer, each layer is another
             # tuple of format ((batch_size, sequence_length, hidden_size))
             # in this case, we want to extract the activation weights at each layer
-            layer_index, head_index, LOC = v
+            layer_index, head_index, activation_locations = v
             
             hidden_states = outputs["hidden_states"]
             layer = hidden_states[layer_index]
             head_hidden_states = layer[:,:, (head_index * head_dim):((head_index+1) * head_dim)]
 
             # 12 attention heads, each attention head is 64 nodes wide
-            total_activations.append(head_hidden_states[:,:,LOC])
+            total_activations.append(head_hidden_states[:,:,activation_locations])
 
         return total_activations
 
     def get_interchanged_variables_mapping(self, variable_names):
         interchanged_variables_mapping = defaultdict(list)
         for i, variable in enumerate(variable_names):
-            layer_index, head_index, LOC = variable
-            interchanged_variables_mapping[layer_index].append((i, head_index, LOC))
+            layer_index, head_index, activation_locations = variable
+            interchanged_variables_mapping[layer_index].append((i, head_index, activation_locations))
 
         return interchanged_variables_mapping
 
