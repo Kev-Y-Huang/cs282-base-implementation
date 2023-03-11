@@ -90,6 +90,7 @@ class CausalDistiller:
             return deserialized_variables
         
         # node mappings
+        # neuron mapping logic is taken from the paper's implementation, modified to fit out usecase
         with open(params.neuron_mapping) as json_file:
             logger.info(f"Loading neuron mapping {params.neuron_mapping}")
             neuron_mapping_json = json.load(json_file)
