@@ -336,25 +336,23 @@ class Transformer(nn.Module):
             
             hidden_state = layer_outputs[-1]
 
-            # interchange (swap or exchange specific activations - outputs of attention heads - 
-            # between different positions or layers within the model) if specified
+            # interchange operation after receiving hidden_states
             if None not in [variable_names, interchanged_variables] and i in variable_names:
-                # interchange operation not meant for embedding layers
-                if variable_names != "embeddings":
-                    for interchanged_variable in variable_names[i]:
-                        # for each variable, retrieve the corresponding interchanged activations
-                        layer = interchanged_variable[0] 
-                        head = interchanged_variable[1]
-                        activation_locations = interchanged_variable[2]
+                # loop through all variable names: 
+                target_neurons = variable_names[i]
+                for v in target_neurons: 
+                    layer, head, activation_locations = v
 
-                        interchanged_activations = interchanged_variables[layer]
-                        # replace some tokens in the input sequence as specified by interchange_mask
-                        # and start and end indices with the interchanged values
-                        start_idx = head * self.head_dimension + activation_locations.start
-                        end_idx = start_idx + activation_locations.stop
-                
-                        # apply interchange mask
-                        hidden_state[...,start_idx:end_idx][interchange_mask] = interchanged_activations[dual_interchange_mask]
+                    # grab corresponding target activations
+                    counterfactual_activations = interchanged_variables[layer]
+
+                    # target interchange neurons are only within activation_locations 
+                    # at a specific attention head 
+                    neuron_start = head * self.head_dimension + activation_locations.start
+                    neuron_end = neuron_start + activation_locations.stop 
+
+                    # apply mask 
+                    hidden_state[:,:,neuron_start:neuron_end][interchange_mask] = counterfactual_activations[dual_interchange_mask]
 
             if output_attentions:
                 assert len(layer_outputs) == 2

@@ -82,7 +82,7 @@ class CausalDistiller:
         self.student = student
         self.teacher = teacher
         
-        self.deserialized_variable_mappings = []
+        self.deserialized_variable_mappings = defaultdict(list)
         def load_variable_names(m):
             deserialized_variables = [] 
             for variable in m:
@@ -93,14 +93,13 @@ class CausalDistiller:
         with open(params.neuron_mapping) as json_file:
             logger.info(f"Loading neuron mapping {params.neuron_mapping}")
             neuron_mapping_json = json.load(json_file)
-            interchange_variable_mappings = neuron_mapping_json["interchange_variable_mappings"]
-            for m in interchange_variable_mappings:
-                t_deserialized_variables = load_variable_names(m["teacher_variable_names"])
-                s_deserialized_variables = load_variable_names(m["student_variable_names"])
-                self.deserialized_variable_mappings += [
-                    [t_deserialized_variables, s_deserialized_variables]
-                ]
-        
+            names = neuron_mapping_json["interchange_variable_mappings"][0]
+
+            t_deserialized_variables = load_variable_names(names["teacher_variable_names"])
+            s_deserialized_variables = load_variable_names(names["student_variable_names"])
+            self.deserialized_variable_mappings["teacher"].extend(t_deserialized_variables)
+            self.deserialized_variable_mappings["student"].extend(s_deserialized_variables)        
+
         print(self.deserialized_variable_mappings)
 
         self.student_config = student.config
@@ -398,7 +397,7 @@ class CausalDistiller:
         lengths, dual_lengths,
         pred_mask, dual_pred_mask,
     ):        
-
+        # create mask for interchanged neurons
         interchange_mask = torch.zeros_like(pred_mask, dtype=torch.bool)
         dual_interchange_mask = torch.zeros_like(dual_pred_mask, dtype=torch.bool)
 
@@ -441,7 +440,6 @@ class CausalDistiller:
             iter_bar = tqdm(self.dataloader, desc="-Iter", disable=self.params.local_rank not in [-1, 0])
             for batch in iter_bar:
                 # dual_token ids, dual_lengths: x2, y2
-
                 if self.params.n_gpu > 0:
                     batch = tuple(t.to(torch.device("cuda"), non_blocking=True) for t in batch)
 
@@ -540,7 +538,7 @@ class CausalDistiller:
 
         return interchanged_variables_mapping
 
-    # code taken from huggingface
+    # code taken from huggingface Distillation module
     def calculate_loss(self, 
         student_outputs, 
         t_hidden_states, 
@@ -603,7 +601,8 @@ class CausalDistiller:
                 student_outputs["loss_cos"] = loss_cos
             
             return student_outputs
-
+    
+    # taken from Huggingface distillation module - calculating L_CE
     def calculate_causal_loss(self, 
         student_outputs,
         lm_labels,
@@ -611,9 +610,7 @@ class CausalDistiller:
         causal_t_logits,
         ):
 
-        # taken from Huggingface distillation module - calculating L_CE
-        causal_s_logits, causal_s_hidden_states = \
-            student_outputs["logits"], student_outputs["hidden_states"]
+        causal_s_logits = student_outputs["logits"]
         assert causal_s_logits.size() == causal_t_logits.size()
         # https://github.com/peterliht/knowledge-distillation-pytorch/blob/master/model/net.py#L100
         # https://github.com/peterliht/knowledge-distillation-pytorch/issues/2
@@ -659,19 +656,18 @@ class CausalDistiller:
         lm_labels/dual_lm_labels: `torch.tensor(bs, seq_length)` - The language modeling labels (mlm labels for MLM and clm labels for CLM).
         """
 
-        # select random variable names for interchange
-        selector = random.randint(0, len(self.deserialized_variable_mappings)-1)
-        interchange_variable_mapping = self.deserialized_variable_mappings[selector]
-        teacher_variable_names = random.choice(interchange_variable_mapping[0])
-        student_variable_names = random.choice(interchange_variable_mapping[1])
+        # select random variable names for interchange        
+        teacher_variable_names = random.choice(self.deserialized_variable_mappings["teacher"])
+        student_variable_names = random.choice(self.deserialized_variable_mappings["student"])
 
-        # perform interchange here
+        # get variables to interchange
         teacher_interchanged_variables_mapping = self.get_interchanged_variables_mapping(teacher_variable_names)
         student_interchanged_variables_mapping = self.get_interchanged_variables_mapping(student_variable_names)        
 
         # counterfactual becomes x1 
         counterfactual_input_ids = input_ids
         
+        # input x2
         dual_inputs = {
             'input_ids': dual_input_ids,
             'attention_mask': dual_attention_mask,
@@ -788,8 +784,8 @@ class CausalDistiller:
         )
 
         # calculate causal loss - corresponds to L_ce in the paper,
-        # essentially the same as the usual task in original distillation paper
-        # except model outputs are now the interchanged form
+        # essentially the same as the original task in original distillation paper
+        # except model outputs are now from the interchanged models
         counterfactual_outputs_student = self.calculate_causal_loss(
             counterfactual_outputs_student, lm_labels, attention_mask, causal_t_logits)
         loss, causal_loss_ce = update_loss("causal_loss_ce", self.alpha_causal_ce, loss, counterfactual_outputs_student)
