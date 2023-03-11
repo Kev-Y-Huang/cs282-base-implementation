@@ -90,7 +90,7 @@ class CausalDistiller:
             return deserialized_variables
         
         # node mappings
-        # neuron mapping logic is taken from the paper's implementation, modified to fit out usecase
+        # neuron mapping logic is taken from the paper's implementation, modified to fit our usecase
         with open(params.neuron_mapping) as json_file:
             logger.info(f"Loading neuron mapping {params.neuron_mapping}")
             neuron_mapping_json = json.load(json_file)
@@ -410,10 +410,10 @@ class CausalDistiller:
 
             num_interchange = min(num_interchange_1, num_interchange_2)
 
-            start_1 = random.randint(0, lengths[i].tolist() - num_interchange)
+            start_1 = random.randrange(lengths[i].tolist() - num_interchange)
             end_1 = start_1 + num_interchange
 
-            start_2 = random.randint(0, lengths[i].tolist() - num_interchange)
+            start_2 = random.randrange(0, lengths[i].tolist() - num_interchange)
             end_2 = start_2 + num_interchange
 
             for j in range(start_1, end_1):
